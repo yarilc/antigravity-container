@@ -1,0 +1,10 @@
+.git
+.agents
+openspec
+tests
+docs
+README.md
+AGENTS.md
+LICENSE
+__pycache__
+.test-state
