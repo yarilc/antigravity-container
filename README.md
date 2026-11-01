@@ -8,7 +8,7 @@ container. The wrapper follows the workflow of
 The default session exposes the current project and a dedicated application
 home. YOLO and access to the host Podman service are independent opt-ins.
 
-## Requirements and first run
+## Requirements
 
 The host needs Linux, Bash 4.3+, Podman with a rootless engine, and standard
 utilities (`id`, `readlink`, `dirname`, `mkdir`, `sed`, `stat`, `mktemp`). No host Node,
@@ -18,6 +18,117 @@ Linux amd64 is verified in the recorded test environment. Linux arm64 is an
 intended target but remains unverified because no arm64 test environment is
 currently available. Actual results and limitations are recorded in
 [docs/validation.md](docs/validation.md).
+
+## Enable rootless Podman on the host
+
+Run this setup on the Linux host (or inside your Linux/WSL distribution),
+using the same non-root account that will run `antigravity-container.sh`.
+Install Podman and its rootless dependencies using your distribution's
+[installation instructions](https://podman.io/docs/installation).
+The account needs subordinate UID/GID ranges in `/etc/subuid` and
+`/etc/subgid`, the `newuidmap`/`newgidmap` helpers, and a rootless networking
+backend supported by the installed Podman version. If these are missing,
+complete the administrator steps in the
+[rootless setup guide](https://github.com/podman-container-tools/podman/blob/main/docs/tutorials/rootless_tutorial.md)
+before continuing.
+
+Check that local rootless Podman works:
+
+```bash
+podman info --format '{{.Host.Security.Rootless}}'
+podman run --rm docker.io/library/alpine:latest id
+```
+
+The first command must print `true`; the second must successfully start a
+container. Root inside that container is normal for rootless Podman.
+
+The host API socket is required only when you enable delegation with
+`ANTIGRAVITY_CONTAINER_PODMAN=1`. With delegation disabled, local rootless
+Podman is sufficient: skip the socket setup and proceed to [First run](#first-run).
+
+For delegation, the default socket is
+`${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock`. You can select another
+socket with `ANTIGRAVITY_CONTAINER_PODMAN_SOCKET`; an existing local Unix
+`CONTAINER_HOST` is used by default when no explicit socket override is set.
+Choose **one** of the following methods to start the host service.
+
+### With a systemd user session
+
+From a normal login session for your account, enable socket activation:
+
+```bash
+systemctl --user enable --now podman.socket
+systemctl --user status podman.socket --no-pager
+```
+
+Systemd creates the socket and its parent directory, and starts the API
+service when a client connects. An inactive `podman.service` between requests
+is normal. To keep the user service available after logout and start it at
+boot, optionally enable lingering:
+
+```bash
+sudo loginctl enable-linger "$(id -un)"
+```
+
+If `systemctl --user` reports that it cannot connect to the bus, ensure you
+are logged in directly as the intended user with a working systemd user
+session. On systems without systemd, use the manual procedure below.
+
+### Without systemd: create the directories and start the service
+
+An error such as
+`bind: no such file or directory` when creating the socket means that a
+parent directory is missing. The socket file itself is created by Podman;
+do not create it with `touch`.
+
+In a terminal on the host, prepare the runtime directory. On systems without
+a login manager, `/run/user/<uid>` may also be absent; creating it under
+`/run` usually requires administrator privileges:
+
+```bash
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+if [ ! -d "$XDG_RUNTIME_DIR" ]; then
+    sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" "$XDG_RUNTIME_DIR"
+fi
+ls -ld "$XDG_RUNTIME_DIR"
+```
+
+The directory must belong to your account and have mode `0700`
+(`drwx------`). If an existing directory has incorrect ownership or
+permissions, have the administrator correct it before continuing. Then run
+the following as your normal user:
+
+```bash
+install -d -m 0700 "$XDG_RUNTIME_DIR/podman"
+podman system service --time=0 "unix://$XDG_RUNTIME_DIR/podman/podman.sock"
+```
+
+Leave this terminal open and use a second terminal for the checks and wrapper
+commands below. The service runs in the foreground; Ctrl+C stops it.
+Repeat this setup after reboot because `/run` is temporary. Export the same
+`XDG_RUNTIME_DIR` in any other terminal used to run local Podman if your
+session does not set it automatically. Run the service and wrapper without
+`sudo` so they use your rootless containers and configuration.
+
+### Verify the socket before enabling delegation
+
+For either method, run these commands as the same user in the terminal where
+you will launch the wrapper:
+
+```bash
+podman_socket="${ANTIGRAVITY_CONTAINER_PODMAN_SOCKET:-${CONTAINER_HOST#unix://}}"
+podman_socket="${podman_socket:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock}"
+test -S "$podman_socket" && echo "Socket exists"
+podman --remote --url "unix://$podman_socket" info
+```
+
+Enable delegation only if the socket exists and the API command succeeds.
+A socket file alone does not prove that a service is listening. If the API
+command fails, check the systemd status or the foreground service output above.
+See also the official
+[Podman API service documentation](https://docs.podman.io/en/latest/markdown/podman-system-service.1.html).
+
+## First run
 
 ```bash
 chmod +x antigravity-container.sh
@@ -158,16 +269,9 @@ access host paths beyond this project's mount.** This delegation cannot enforce
 project-only filesystem access. The wrapper never starts a nested daemon,
 uses `--privileged`, or automatically disables seccomp or SELinux.
 
-Enable the host rootless service only when you want this delegation:
-
-```bash
-systemctl --user start podman.socket
-# Alternatively, without systemd:
-podman system service --time=0 "unix://${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
-```
-
-The foreground alternative occupies its terminal; start the agent from
-another terminal. With socket access disabled, no service socket is required.
+Enable and verify the host rootless service using the
+[host setup instructions](#enable-rootless-podman-on-the-host) only when you
+want this delegation. With socket access disabled, no service socket is required.
 If SELinux blocks the socket or project bind, the wrapper reports the engine
 error. Configure an appropriate host policy; it does not automatically relabel
 the project or disable labels. SELinux enforcing support requires separate
