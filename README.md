@@ -128,6 +128,19 @@ command fails, check the systemd status or the foreground service output above.
 See also the official
 [Podman API service documentation](https://docs.podman.io/en/latest/markdown/podman-system-service.1.html).
 
+### Launch preflight diagnostics
+
+Before image inspection or build, the wrapper requires a complete single-record
+engine response confirming Linux, rootless `true`, and a valid remote-service
+boolean. Missing fields, extra fields, additional lines (including blank lines),
+query failures, rootful engines, and non-Linux engines stop startup.
+An explicit Unix launch endpoint must contain an absolute socket path;
+`CONTAINER_HOST=unix:///` is rejected before contacting Podman. Named remote
+connections, TCP/SSH transports, and implicit remote contexts are unsupported.
+A local engine or an explicit same-host Unix service is supported, including
+when this wrapper runs inside another container. Launch-engine selection is
+independent of any optional delegation socket override.
+
 ## First run
 
 ```bash
@@ -178,9 +191,14 @@ coverage. A successful Secret Service test alone does not establish working
 Google OAuth.
 
 Keyring files and Google token profiles persist in the dedicated application
-home. Keep this directory private and protect its backups. Newly created
-directories use user-only permissions; existing directory permissions are not
-changed recursively. The state directory must belong to the caller and deny
+home. Keep this directory private and protect its backups. State creation,
+physical path resolution, ownership, access, and permission checks complete before image inspection or build, including explicit rebuilds.
+A new state directory can therefore remain after a later image failure. The
+wrapper scopes its private creation umask to state directory creation; this
+does not set the container process umask. Shell and API-provider file modes
+follow their runtime settings; the account keyring helper independently uses
+`077`. Newly created directories use user-only permissions; existing directory
+permissions are not changed recursively. The state directory must belong to the caller and deny
 group/other access. Startup fails if it is not private; run `chmod 700` on an
 existing directory or select native Linux storage if the filesystem ignores
 Unix permissions (for example, some WSL Windows drive mounts). The keyring uses passphrase protection; application
@@ -226,8 +244,18 @@ ANTIGRAVITY_CONTAINER_PODMAN=1 agy
 ANTIGRAVITY_YOLO=1 ANTIGRAVITY_CONTAINER_PODMAN=1 agy
 ```
 
-Both booleans accept `1`, `true`, or `yes`, and `0`, `false`, or `no`, ignoring
-case. Empty/unset means disabled; other values fail before build or launch.
+`ANTIGRAVITY_YOLO` accepts `1`, `true`, or `yes`, and `0`, `false`, or `no`,
+ignoring case. Empty/unset means disabled; other YOLO values fail before build
+or launch. `ANTIGRAVITY_CONTAINER_PODMAN` enables delegation only for the exact
+string `1`. Every other value (including `true`, `yes`, `01`, and `maybe`)
+disables delegation without error, in CLI and shell modes.
+
+**Migration:** replace previously enabling `ANTIGRAVITY_CONTAINER_PODMAN=true`
+or `yes` with `ANTIGRAVITY_CONTAINER_PODMAN=1` to retain host service access.
+When disabled, delegation socket overrides are ignored and `CONTAINER_HOST` is
+explicitly removed from the container environment, including image or engine
+defaults. The wrapper retains its own launch-engine connection.
+
 YOLO adds Google's `--dangerously-skip-permissions` without modifying saved
 settings. Disabling this variable does not override permission flags supplied
 directly to `agy` or existing settings. Google's internal terminal sandbox
@@ -301,12 +329,20 @@ Absolute paths are preserved because the host service resolves bind sources
 for child containers. The process uses `--userns=keep-id` and the caller's
 UID/GID, so files created in the project belong to the caller. The container
 root is read-only; workspace and application state are writable, with ephemeral
-tmpfs storage at `/tmp` and `/run`. `/tmp` allows execution for native runtime
-components; `/run` uses `noexec`. No full host home, host OpenSpec settings,
-host certificates, or SSH configuration is mounted automatically.
+tmpfs storage provisioned explicitly with automatic read-only tmpfs mounts
+disabled. `/tmp` allows execution for native runtime components and has a
+512 MiB limit; `/var/tmp` uses `noexec` with a separate 512 MiB limit; `/run`
+uses `noexec` with a 32 MiB limit. All three use `nosuid,nodev`, writable mode
+`1777`, and disappear with the container. The keyring runtime subdirectory
+inside `/tmp` remains private with mode `0700`. No full host home, host OpenSpec
+settings, host certificates, or SSH configuration is mounted automatically.
 
 Each session reserves a workspace-index name and removes its own container at
-termination. Existing sessions are not deleted to resolve a name collision.
+termination. Temporary container-creation diagnostics are removed on normal exit,
+creation failure, exhausted naming retries, unexpected failures, and handled
+TERM/INT/HUP interruptions. Cleanup preserves error output and status and
+removes only the session's own container. SIGKILL and host failure cannot run
+EXIT cleanup. Existing sessions are not deleted to resolve a name collision.
 Separate state directories provide separate authentication profiles. An account
 session holds an exclusive lock on its keyring directory to prevent independent
 daemons from overwriting a shared collection. Another account session using
@@ -317,7 +353,11 @@ and the API provider do not acquire this keyring lock.
 The wrapper can itself run inside a container connected to the same Linux host
 through a local Unix Podman socket. Its workspace and state paths must also
 exist on that host at exactly the same absolute paths. For socket delegation,
-the wrapper uses the service-reported host socket path as the bind source.
+the selected path must be absolute before canonicalization and identify a
+readable, writable Unix socket. The service must return one complete rootless
+result and an absolute host socket path; extra response lines are rejected.
+The wrapper uses that reported path as the bind source, preserving spaces and
+supporting paths remapped inside an outer container.
 TCP/SSH transports, named remote connections, Podman Machine, and rootful
 engines are rejected.
 

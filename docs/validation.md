@@ -14,7 +14,7 @@ resolved successfully as UID/GID 1000 with a read-only root filesystem.
 
 ## Commands and coverage
 
-The final automated run passed **19 wrapper tests and 9 runtime tests**.
+The initial implementation automated run passed **19 wrapper tests and 9 runtime tests**.
 ShellCheck passed for the wrapper, entrypoint, keyring helper, and verification
 scripts. `openspec validate add-antigravity-container-runtime --strict` passed.
 
@@ -45,7 +45,8 @@ volume mounted at its original host path in the verification runner.
 Projects can remain on Windows-backed storage; choose a private native Linux
 path for `ANTIGRAVITY_CONTAINER_STATE_DIR`.
 
-The image's `/run` directory is not writable by the non-root process. The
+In the initial implementation, the image's `/run` directory was not writable
+by the non-root process; the explicit mount policy below supersedes that layout. The
 private D-Bus/keyring runtime directory is created with mode 0700 in `/tmp`,
 which is a per-container ephemeral tmpfs.
 
@@ -191,3 +192,79 @@ export your key privately in your shell, and run a harmless `-p` prompt with a
 finite `--print-timeout`. Repeat with `ANTIGRAVITY_YOLO=1` and inspect the
 container to confirm that YOLO did not add a Podman socket. Test `--sandbox`
 separately, recording the actual host behavior without expanding privileges.
+
+
+## Launch preflight hardening (2026-11-01)
+
+Change: `harden-container-launch-preflight`. Tests used the existing Linux
+amd64 image through the same-host Unix rootless Podman service, retaining host
+absolute bind paths and using disposable native Linux volume storage for state.
+The host engine is Podman 4.9.3 on WSL2 kernel
+`6.6.87.2-microsoft-standard-WSL2`; the outer client is Podman 4.3.1.
+SELinux is disabled and the standard seccomp policy remains enabled.
+The existing image reports Antigravity CLI 1.4.12 and OpenSpec 1.16.0.
+
+Final checks passed:
+
+- `python3 -m unittest discover -s tests -p test_wrapper.py -v`:
+  **32 tests passed** (41.389 seconds).
+- `bash tests/run-runtime.sh`: **12 tests passed** (65.684 seconds), using
+  a disposable native-state volume that the runner removed after completion.
+- Bash syntax checks for all five shell scripts, and ShellCheck 0.11.0
+  through `docker.io/koalaman/shellcheck:stable`: passed.
+- `openspec validate harden-container-launch-preflight --strict`: passed.
+
+The expanded wrapper regressions cover complete engine and delegation
+responses (including extra blank records), failed queries, empty Unix launch
+endpoints, socket precedence/canonicalization/remapping and spaces, exact
+opt-in across CLI/shell and YOLO combinations, early private-state rejection,
+state symlinks, inherited wrapper umask, explicit mount arguments, and cleanup
+on success, failure, retry exhaustion, unexpected command failure, and handled
+TERM/INT/HUP interruption after diagnostic allocation. Fault injection tests
+exercise ownership, non-native mode reporting, and path-resolution failures
+without requiring administrator privileges or filesystem races.
+
+The real rootless runtime checks established:
+
+- `/tmp` is executable tmpfs, `/var/tmp` and `/run` are `noexec` tmpfs;
+  all use `nosuid,nodev` and are writable by the session user. Their limits
+  are respectively 512 MiB, 512 MiB, and 32 MiB. The wrapper explicitly sets
+  mode `1777`, including `/run`, rather than copying its root-owned image mode.
+  Native executable probes succeed from `/tmp` and are denied on the other
+  two mounts; temporary sentinels disappear on container replacement.
+- A disposable derived image defining `CONTAINER_HOST` cannot retain that
+  value when delegation is `0` or `true`; the environment variable is absent,
+  no socket is exposed, and the outer Unix launch connection still works.
+- Delegation enabled with `1` supports a real child-container project bind
+  and preserves caller ownership. Fake-engine checks separately establish
+  that choosing a distinct delegation endpoint does not retarget launch calls.
+- Shell and API-entrypoint probes observed umask `022` and controlled file
+  mode `0644`. The API test substitutes a harmless `agy` probe after selecting
+  the native `gemini` provider; it performs no model request. The real account
+  helper with dummy passphrases observed umask `077`, file mode `0600`, and
+  private runtime mode `0700`. These are measured runtime properties, not
+  consequences inferred from the wrapper's temporary state-creation umask.
+- Image smoke checks, state persistence and ownership, worktree boundaries,
+  concurrent sessions, keyring persistence/unlock and rejection of wrong or
+  mismatched passphrases, credential process audits, and native missing-key
+  diagnostics pass with the explicit mount policy.
+
+These tests use synthetic secrets and do not repeat Google OAuth or paid
+model acceptance. Existing arm64, SELinux-enforcing, and internal sandbox
+limitations remain as recorded above. Temporary diagnostic cleanup covers
+exits where the EXIT handler can run; SIGKILL and host failure are excluded.
+
+
+### TODO acceptance mapping
+
+| TODO item | Evidence |
+| --- | --- |
+| Complete launch response | `test_complete_launch_response_required`, both normal and explicit rebuild paths |
+| Empty Unix launch endpoint | `test_launch_endpoint_rejected_before_query`, no engine calls |
+| Exact delegation opt-in | `test_exact_delegation_cli_and_shell`, independent YOLO combinations |
+| Strict socket path and response | Socket response, inaccessible/relative socket, selection, canonicalization, and host remapping wrapper regressions |
+| Clear disabled connection | `test_disabled_delegation_removes_image_default` plus launch-connection independence checks |
+| State before image operations | `test_state_preflight_failures_before_images`, creation/resolution/ownership/access/mode failures |
+| Explicit temporary mounts | Argument regression, `test_explicit_temporary_mounts`, image smoke and keyring lifecycle |
+| Scoped state umask | `test_private_state_symlink_and_scoped_umask` and `test_runtime_file_modes_by_execution_path` |
+| Diagnostic cleanup | `test_diagnostic_cleanup_all_exit_paths` and `test_diagnostic_cleanup_on_startup_signals` |

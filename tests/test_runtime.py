@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = ROOT / 'antigravity-container.sh'
@@ -87,9 +88,11 @@ class RuntimeTests(unittest.TestCase):
     def keyring_command(self, script):
         self.state.mkdir(exist_ok=True)
         self.state.chmod(0o700)
-        return ['podman', 'run', '--rm', '--interactive', '--tty', '--read-only',
+        return ['podman', 'run', '--rm', '--interactive', '--tty', '--read-only', '--read-only-tmpfs=false',
                 '--userns=keep-id', '--user', f'{os.getuid()}:{os.getgid()}',
-                '--tmpfs', '/tmp:rw', '--tmpfs', '/run:rw',
+                '--tmpfs', '/tmp:rw,exec,nosuid,nodev,mode=1777,size=512m',
+                '--tmpfs', '/run:rw,nosuid,nodev,noexec,mode=1777,size=32m',
+                '--tmpfs', '/var/tmp:rw,nosuid,nodev,noexec,mode=1777,size=512m',
                 '--volume', f'{self.state}:/antigravity-home:rw',
                 '--entrypoint', '/usr/local/lib/antigravity/keyring-session.sh',
                 IMAGE, '/bin/bash', '-ec', script]
@@ -138,6 +141,100 @@ class RuntimeTests(unittest.TestCase):
         self.assert_success(self.shell(script, ANTIGRAVITY_CONTAINER_PODMAN='1'))
         self.assertEqual((self.project / 'child-file').stat().st_uid, os.getuid())
         self.assert_success(self.shell('test ! -S /run/podman/podman.sock\ntest -z "${CONTAINER_HOST:-}"\n'))
+
+    def test_disabled_delegation_removes_image_default(self):
+        name = 'localhost/antigravity-test-default-' + uuid.uuid4().hex
+        created = subprocess.run(['podman', 'create', '--entrypoint', '/bin/true', IMAGE],
+                                 check=True, text=True, capture_output=True).stdout.strip()
+        try:
+            subprocess.run(['podman', 'commit', '--change',
+                            'ENV CONTAINER_HOST=unix:///image-default.sock', created, name],
+                           check=True, text=True, capture_output=True)
+            try:
+                for mode in ('0', 'true'):
+                    self.assert_success(self.shell(
+                        'test ! -v CONTAINER_HOST\ntest ! -S /run/podman/podman.sock\n',
+                        ANTIGRAVITY_CONTAINER_IMAGE=name, ANTIGRAVITY_CONTAINER_PODMAN=mode))
+            finally:
+                subprocess.run(['podman', 'rmi', '--force', name], check=True, capture_output=True)
+        finally:
+            subprocess.run(['podman', 'rm', '--force', created], check=True, capture_output=True)
+
+    def test_explicit_temporary_mounts(self):
+        probe = r'''import os
+import pathlib
+import subprocess
+mounts = {}
+for line in pathlib.Path('/proc/self/mountinfo').read_text().splitlines():
+    fields = line.split()
+    sep = fields.index('-')
+    mounts[fields[4]] = (fields[5].split(','), fields[sep+1], fields[sep+3].split(','))
+for path, limit, executable in (('/tmp', 512*1024*1024, True),
+                                 ('/var/tmp', 512*1024*1024, False),
+                                 ('/run', 32*1024*1024, False)):
+    options, fs, super_options = mounts[path]
+    assert fs == 'tmpfs', (path, fs)
+    assert {'rw', 'nosuid', 'nodev'} <= set(options), (path, options)
+    assert ('noexec' not in options) == executable, (path, options)
+    stats = os.statvfs(path)
+    assert stats.f_blocks * stats.f_frsize == limit, (path, stats)
+    if path != '/run':
+        assert pathlib.Path(path).stat().st_mode & 0o7777 == 0o1777
+    target = pathlib.Path(path) / 'antigravity-execution-probe'
+    target.write_bytes(pathlib.Path('/bin/true').read_bytes())
+    target.chmod(0o755)
+    try:
+        result = subprocess.run([str(target)])
+    except PermissionError:
+        assert not executable, path
+    else:
+        assert executable and result.returncode == 0, path
+    (pathlib.Path(path) / 'antigravity-ephemeral').write_text('temporary')
+    print(path, 'limit', limit, 'executable', executable)
+'''
+        result = self.shell('python3 -c ' + shlex.quote(probe) + '\n')
+        self.assert_success(result)
+        self.assert_success(self.shell(
+            'for path in /tmp /var/tmp /run; do test ! -e "$path/antigravity-ephemeral"; done\n'))
+
+    def test_runtime_file_modes_by_execution_path(self):
+        self.state.mkdir(exist_ok=True)
+        self.state.chmod(0o700)
+        probe = self.state / 'mode-probe.py'
+        probe.write_text('''import os
+from pathlib import Path
+mask = os.umask(0)
+os.umask(mask)
+p = Path(os.environ['HOME']) / 'mode-probe-output'
+p.unlink(missing_ok=True)
+p.write_text('probe')
+mode = p.stat().st_mode & 0o777
+assert mode == (0o666 & ~mask), (mode, mask)
+print('observed-mask', oct(mask), 'file-mode', oct(mode))
+if os.environ.get('EXPECT_PRIVATE'):
+    assert mask == 0o077 and mode == 0o600
+    runtime = Path(os.environ['XDG_RUNTIME_DIR'])
+    assert runtime.stat().st_mode & 0o777 == 0o700
+''')
+        shell = self.shell('python3 "$HOME/mode-probe.py"\n')
+        self.assert_success(shell)
+        self.assertIn('observed-mask', shell.stdout)
+        api = self.shell('''mkdir -p /tmp/probe-bin
+printf '#!/bin/bash\nexec python3 "$HOME/mode-probe.py"\n' > /tmp/probe-bin/agy
+chmod 755 /tmp/probe-bin/agy
+export PATH="/tmp/probe-bin:$PATH"
+exec /usr/local/bin/antigravity-entrypoint -p probe --settings '{"modelProvider":"gemini"}'
+''')
+        self.assert_success(api)
+        self.assertIn('observed-mask', api.stdout)
+        code, output = terminal_run(self.keyring_command(
+            'EXPECT_PRIVATE=1 python3 "$HOME/mode-probe.py"'),
+            [('Keyring passphrase:', 'mode-test-only'),
+             ('Confirm new keyring passphrase:', 'mode-test-only')])
+        self.assertEqual(code, 0, output)
+        self.assertIn('observed-mask 0o77 file-mode 0o600', output)
+        print('Runtime mode probes:', shell.stdout.strip(), api.stdout.strip(),
+              'account mask=077 mode=600 runtime=700')
 
     def test_exit_code_and_concurrent_sessions(self):
         result = self.shell('exit 23\n')

@@ -27,7 +27,9 @@ Environment:
     default: ${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock
   GEMINI_API_KEY                    forwarded if set; requires modelProvider: gemini
 
-Booleans accept 1/true/yes or 0/false/no, case-insensitively; empty is disabled.
+YOLO accepts 1/true/yes or 0/false/no, case-insensitively; empty is disabled.
+Podman delegation is enabled only with exact ANTIGRAVITY_CONTAINER_PODMAN=1.
+Every other value disables it without error; migrate true/yes to 1.
 YOLO adds --dangerously-skip-permissions without changing mounts or settings.
 Native CLI flags and existing permissions still apply when YOLO is disabled.
 
@@ -59,20 +61,32 @@ boolean() {
     esac
 }
 yolo=$(boolean ANTIGRAVITY_YOLO "${ANTIGRAVITY_YOLO:-}")
-podman_access=$(boolean ANTIGRAVITY_CONTAINER_PODMAN "${ANTIGRAVITY_CONTAINER_PODMAN:-}")
+podman_access=0
+[[ "${ANTIGRAVITY_CONTAINER_PODMAN:-}" != 1 ]] || podman_access=1
 
 command -v podman >/dev/null || die 'Podman is required on the host'
 # Unix service access also supports running this wrapper inside another container
 # on the same host. TCP/SSH transports and Podman Machine are not supported.
 [[ -z "${CONTAINER_CONNECTION:-}" ]] || die 'named remote connections are not supported; use local Podman or a local Unix CONTAINER_HOST'
 case "${CONTAINER_HOST:-}" in
-    ''|unix:///*) ;;
+    '') ;;
+    unix:///?*) ;;
     *) die 'remote TCP/SSH Podman contexts are not supported; use a local Unix socket' ;;
 esac
-runtime_info=$(podman info --format '{{.Host.Security.Rootless}} {{.Host.OS}} {{.Host.ServiceIsRemote}}') || die 'cannot query Podman; check the local rootless service'
-read -r rootless runtime_os remote <<< "$runtime_info"
-[[ "$rootless" == true && "$runtime_os" == linux ]] || die 'a Linux rootless Podman engine is required'
-if [[ "$remote" == true && "${CONTAINER_HOST:-}" != unix:///* ]]; then
+# Preserve record boundaries: command substitution normally strips all trailing
+# newlines, hiding extra blank records. The sentinel retains them for validation.
+engine_response=''
+capture_engine_info() {
+    engine_response=$(podman "$@" && printf '\001') || return 1
+    engine_response=${engine_response%$'\001'}
+    engine_response=${engine_response%$'\n'}
+    [[ "$engine_response" != *$'\n'* && "$engine_response" != *$'\r'* ]]
+}
+capture_engine_info info --format '{{.Host.Security.Rootless}} {{.Host.OS}} {{.Host.ServiceIsRemote}}' || die 'cannot query Podman or invalid multiline response; check the local rootless service'
+launch_pattern='^[[:blank:]]*true[[:blank:]]+linux[[:blank:]]+(true|false)[[:blank:]]*$'
+[[ "$engine_response" =~ $launch_pattern ]] || die 'a complete Linux rootless Podman response is required (true linux true|false)'
+remote=${BASH_REMATCH[1]}
+if [[ "$remote" == true && "${CONTAINER_HOST:-}" != unix:///?* ]]; then
     die 'remote Podman contexts are not supported; set CONTAINER_HOST to a local Unix socket'
 fi
 
@@ -83,14 +97,15 @@ if [[ -z "${ANTIGRAVITY_CONTAINER_PODMAN_SOCKET:-}" && "${CONTAINER_HOST:-}" == 
     socket=${CONTAINER_HOST#unix://}
 fi
 if ((podman_access)); then
+    [[ "$socket" == /* ]] || die "Podman socket path must be absolute: $socket"
     [[ -S "$socket" && -r "$socket" && -w "$socket" ]] || die "Podman socket not accessible: $socket; enable 'systemctl --user start podman.socket' or start 'podman system service --time=0'"
-    socket=$(readlink -f -- "$socket")
-    socket_info=$(podman --remote --url "unix://$socket" info --format '{{.Host.Security.Rootless}} {{.Host.RemoteSocket.Path}}') || die 'cannot access the selected Podman socket; check service permissions and SELinux policy'
-    read -r socket_rootless host_socket <<< "$socket_info"
-    [[ "$socket_rootless" == true ]] || die 'the selected Podman socket must serve a rootless engine'
-    # A wrapper already inside a container sees a remapped Unix socket. Bind
-    # sources are resolved by the service, so use its host-side socket path.
-    [[ "$host_socket" == /* ]] || die 'the service did not report an absolute host socket path'
+    socket=$(readlink -f -- "$socket") || die "cannot resolve Podman socket: $socket"
+    capture_engine_info --remote --url "unix://$socket" info --format '{{.Host.Security.Rootless}} {{.Host.RemoteSocket.Path}}' || die 'cannot access the selected Podman socket or invalid multiline response; check service permissions and SELinux policy'
+    # The path is the complete remainder, including spaces. It can differ from
+    # the accessible endpoint when this wrapper runs inside another container.
+    socket_pattern='^true[[:blank:]]+(/.+)$'
+    [[ "$engine_response" =~ $socket_pattern ]] || die 'the selected Podman socket must report verified rootless true and an absolute host socket path'
+    host_socket=${BASH_REMATCH[1]}
 fi
 
 script_path=$(readlink -f -- "${BASH_SOURCE[0]}")
@@ -100,6 +115,13 @@ workspace_mount=$workspace
 ((git_worktree == 0)) || workspace_mount=$(dirname -- "$workspace")
 image="${ANTIGRAVITY_CONTAINER_IMAGE:-localhost/antigravity-cli:latest}"
 state_dir="${ANTIGRAVITY_CONTAINER_STATE_DIR:-$HOME/.local/share/antigravity-container/home}"
+
+(umask 077; mkdir -p -- "$state_dir") || die "cannot create state directory: $state_dir"
+state_dir=$(cd -- "$state_dir" && pwd -P) || die "cannot resolve state directory: $state_dir"
+[[ -r "$state_dir" && -w "$state_dir" && -x "$state_dir" ]] || die "state directory is not accessible: $state_dir"
+state_mode=$(stat -c '%a' -- "$state_dir")
+[[ $(stat -c '%u' -- "$state_dir") == "$caller_uid" ]] || die 'the state directory must belong to the calling user'
+(( (8#$state_mode & 077) == 0 )) || die 'the state directory must be private (chmod 700); use a native Linux filesystem if this filesystem does not enforce Unix permissions'
 
 if ((build_image)); then
     podman build --no-cache --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
@@ -113,20 +135,13 @@ else
     fi
 fi
 
-umask 077
-mkdir -p -- "$state_dir"
-state_dir=$(cd -- "$state_dir" && pwd -P)
-[[ -r "$state_dir" && -w "$state_dir" && -x "$state_dir" ]] || die "state directory is not accessible: $state_dir"
-state_mode=$(stat -c '%a' -- "$state_dir")
-[[ $(stat -c '%u' -- "$state_dir") == "$caller_uid" ]] || die 'the state directory must belong to the calling user'
-(( (8#$state_mode & 077) == 0 )) || die 'the state directory must be private (chmod 700); use a native Linux filesystem if this filesystem does not enforce Unix permissions'
-
 container_args=(
-    --rm --interactive --read-only
+    --rm --interactive --read-only --read-only-tmpfs=false
     --userns=keep-id --user "$caller_uid:$caller_gid"
     --workdir "$workspace"
-    --tmpfs '/tmp:rw,nosuid,nodev,size=512m'
-    --tmpfs '/run:rw,nosuid,nodev,noexec,size=32m'
+    --tmpfs '/tmp:rw,exec,nosuid,nodev,mode=1777,size=512m'
+    --tmpfs '/run:rw,nosuid,nodev,noexec,mode=1777,size=32m'
+    --tmpfs '/var/tmp:rw,nosuid,nodev,noexec,mode=1777,size=512m'
     --env HOME=/antigravity-home
     --env EDITOR=nano --env VISUAL=nano
     --env AGY_CLI_DISABLE_AUTO_UPDATE=true
@@ -143,6 +158,8 @@ if ((podman_access)); then
         --volume "$host_socket:/run/podman/podman.sock:rw"
         --env CONTAINER_HOST=unix:///run/podman/podman.sock
     )
+else
+    container_args+=(--unsetenv CONTAINER_HOST)
 fi
 if ((shell_mode)); then
     container_args+=(--entrypoint /bin/bash)
@@ -168,8 +185,10 @@ done <<< "$names"
 # confused with a create-time naming collision. Remove only our own container.
 container_id=''
 client_pid=''
+create_error=''
 # shellcheck disable=SC2329 # Invoked by the EXIT trap.
 cleanup() {
+    [[ -z "$create_error" ]] || rm -f -- "$create_error" || true
     [[ -z "$container_id" ]] || podman rm --force --ignore "$container_id" >/dev/null 2>&1 || true
 }
 # shellcheck disable=SC2329 # Invoked by signal traps.
@@ -195,12 +214,12 @@ for ((attempt=0; attempt<20; attempt++)); do
             next_index=$((next_index + 1))
         else
             cat -- "$create_error" >&2
-            rm -f -- "$create_error"
             exit "$create_status"
         fi
     fi
 done
 rm -f -- "$create_error"
+create_error=''
 [[ -n "$container_id" ]] || die 'could not reserve a container name after 20 attempts'
 
 # Explicit stdin redirection prevents Bash from replacing stdin with /dev/null
