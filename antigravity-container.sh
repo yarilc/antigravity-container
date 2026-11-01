@@ -17,6 +17,12 @@ Container options:
   --container-help          show this help without requiring Podman
 
 All other arguments are forwarded unchanged to agy.
+TERM/INT/HUP are forwarded once; interruption exits are 143/130/129.
+Shutdown allows five seconds of application grace, then forces owned cleanup.
+Control calls and client termination have separate finite deadlines.
+Only this invocation's verified container is removed. Engine loss or SIGKILL
+can leave residual resources requiring manual inspection. Host coreutils
+provides the required timeout command.
 
 Environment:
   ANTIGRAVITY_CONTAINER_IMAGE       default: localhost/antigravity-cli:latest
@@ -65,12 +71,16 @@ podman_access=0
 [[ "${ANTIGRAVITY_CONTAINER_PODMAN:-}" != 1 ]] || podman_access=1
 
 command -v podman >/dev/null || die 'Podman is required on the host'
+command -v timeout >/dev/null || die 'coreutils timeout is required for bounded session cleanup'
 # Unix service access also supports running this wrapper inside another container
 # on the same host. TCP/SSH transports and Podman Machine are not supported.
 [[ -z "${CONTAINER_CONNECTION:-}" ]] || die 'named remote connections are not supported; use local Podman or a local Unix CONTAINER_HOST'
 case "${CONTAINER_HOST:-}" in
     '') ;;
-    unix:///?*) ;;
+    unix://*)
+        launch_socket=${CONTAINER_HOST#unix://}
+        [[ "$launch_socket" == /* && -n "${launch_socket//\//}" ]] || die 'CONTAINER_HOST requires an absolute Unix socket path beyond /'
+        ;;
     *) die 'remote TCP/SSH Podman contexts are not supported; use a local Unix socket' ;;
 esac
 # Preserve record boundaries: command substitution normally strips all trailing
@@ -181,51 +191,143 @@ while IFS= read -r name; do
     ((numeric < next_index)) || next_index=$((numeric + 1))
 done <<< "$names"
 
-# Reserve the name with create, so an actual process exit code 125 is never
-# confused with a create-time naming collision. Remove only our own container.
+# Ownership comes from a private CID file, including when create is interrupted.
 container_id=''
 client_pid=''
-create_error=''
-# shellcheck disable=SC2329 # Invoked by the EXIT trap.
-cleanup() {
-    [[ -z "$create_error" ]] || rm -f -- "$create_error" || true
-    [[ -z "$container_id" ]] || podman rm --force --ignore "$container_id" >/dev/null 2>&1 || true
-}
+session_tmp=''
+pending_signal=''
+pending_status=0
+creating=0
+attached=0
+name=''
+
 # shellcheck disable=SC2329 # Invoked by signal traps.
-forward_signal() {
-    local signal=$1 status=$2
-    [[ -z "$container_id" ]] || podman kill --signal "$signal" "$container_id" >/dev/null 2>&1 || true
-    [[ -z "$client_pid" ]] || wait "$client_pid" 2>/dev/null || true
-    exit "$status"
+record_signal() {
+    if ((pending_status == 0)); then
+        pending_signal=$1
+        pending_status=$2
+    fi
+    # A pending create is resolved by cleanup, with a finite completion budget.
+    [[ -z "$client_pid" ]] || exit "$pending_status"
 }
-trap cleanup EXIT
-trap 'forward_signal TERM 143' TERM
-trap 'forward_signal INT 130' INT
-trap 'forward_signal HUP 129' HUP
-create_error=$(mktemp)
-for ((attempt=0; attempt<20; attempt++)); do
-    name="$prefix-$next_index"
-    if container_id=$(podman create --name "$name" "${container_args[@]}" "$image" "${args[@]}" 2>"$create_error"); then
-        break
-    else
-        create_status=$?
-        container_id=''
-        if podman container exists "$name"; then
-            next_index=$((next_index + 1))
-        else
-            cat -- "$create_error" >&2
-            exit "$create_status"
+
+# shellcheck disable=SC2329 # Called by EXIT cleanup and its client reaper.
+wait_for_client_until() {
+    local deadline=$1
+    while kill -0 "$client_pid" 2>/dev/null; do
+        ((SECONDS < deadline)) || return 1
+        sleep 0.05
+    done
+}
+
+# shellcheck disable=SC2329 # Called by EXIT cleanup.
+reap_client() {
+    [[ -n "$client_pid" ]] || return 0
+    if ! wait_for_client_until "$SECONDS"; then
+        kill -TERM "$client_pid" 2>/dev/null || true
+        if ! wait_for_client_until "$((SECONDS + 5))"; then
+            kill -KILL "$client_pid" 2>/dev/null || true
         fi
     fi
-done
-rm -f -- "$create_error"
-create_error=''
-[[ -n "$container_id" ]] || die 'could not reserve a container name after 20 attempts'
+    if wait_for_client_until "$((SECONDS + 1))"; then
+        wait "$client_pid" 2>/dev/null || true
+    else
+        printf 'antigravity-container: cannot reap Podman client %s; inspect it manually\n' "$client_pid" >&2
+    fi
+    client_pid=''
+}
 
-# Explicit stdin redirection prevents Bash from replacing stdin with /dev/null
-# for the background client; traps can forward signals while wait is active.
-podman start --attach --interactive "$container_id" <&0 &
+recover_container_id() {
+    local recovered=''
+    [[ -n "$session_tmp" && -s "$session_tmp/cid" ]] || return 0
+    recovered=$(< "$session_tmp/cid")
+    [[ "$recovered" =~ ^[a-f0-9]{64}$ ]] || {
+        printf 'antigravity-container: invalid container ID in private creation record; inspect creation manually\n' >&2
+        return 1
+    }
+    container_id=$recovered
+}
+
+# shellcheck disable=SC2329 # Invoked by the EXIT trap.
+cleanup() {
+    local status=$? control_status=0
+    ((pending_status == 0)) || status=$pending_status
+    trap '' TERM INT HUP
+    if ((creating)); then
+        if [[ -n "$client_pid" ]]; then
+            wait_for_client_until "$((SECONDS + 5))" || true
+            reap_client
+        fi
+        # A CID can be published while the local client is being cancelled.
+        recover_container_id || true
+        if ((pending_status)) && [[ -z "$container_id" ]]; then
+            printf 'antigravity-container: creation outcome unresolved for %s; inspect the engine manually (no verified owned ID)\n' "$name" >&2
+        fi
+    fi
+    if [[ -n "$container_id" ]]; then
+        if ((pending_status && attached)); then
+            if timeout --kill-after=1s 5s podman kill --signal "$pending_signal" "$container_id" >/dev/null; then
+                [[ -z "$client_pid" ]] || wait_for_client_until "$((SECONDS + 5))" || true
+            else
+                printf 'antigravity-container: cannot forward %s to owned container %s\n' "$pending_signal" "$container_id" >&2
+            fi
+        fi
+        timeout --kill-after=1s 5s podman rm --force --ignore --time 0 "$container_id" >/dev/null || control_status=$?
+        if ((control_status)); then
+            printf 'antigravity-container: cannot remove owned container %s (status %s); inspect the engine and remove it manually\n' "$container_id" "$control_status" >&2
+        fi
+    fi
+    reap_client
+    [[ -z "$session_tmp" ]] || rm -rf -- "$session_tmp" || true
+    return "$status"
+}
+trap cleanup EXIT
+trap 'record_signal TERM 143' TERM
+trap 'record_signal INT 130' INT
+trap 'record_signal HUP 129' HUP
+session_tmp=$(umask 077; mktemp -d) || die 'cannot create private session bookkeeping directory'
+(umask 077; : > "$session_tmp/output"; : > "$session_tmp/error")
+((pending_status == 0)) || exit "$pending_status"
+for ((attempt=0; attempt<20; attempt++)); do
+    ((pending_status == 0)) || exit "$pending_status"
+    name="$prefix-$next_index"
+    rm -f -- "$session_tmp/cid"
+    creating=1
+    podman create --name "$name" --cidfile "$session_tmp/cid" "${container_args[@]}" "$image" "${args[@]}" \
+        </dev/null >"$session_tmp/output" 2>"$session_tmp/error" &
+    client_pid=$!
+    ((pending_status == 0)) || exit "$pending_status"
+    create_status=0
+    wait "$client_pid" || create_status=$?
+    ((pending_status == 0)) || exit "$pending_status"
+    client_pid=''
+    recover_container_id || die 'cannot verify the created container identity'
+    creating=0
+    if ((create_status == 0)); then
+        [[ -n "$container_id" ]] || die 'creation succeeded without a container ID'
+        break
+    fi
+    cat -- "$session_tmp/error" >&2
+    [[ -z "$container_id" ]] || exit "$create_status"
+    exists_status=0
+    podman container exists "$name" || exists_status=$?
+    ((pending_status == 0)) || exit "$pending_status"
+    case "$exists_status" in
+        0) next_index=$((next_index + 1)) ;;
+        1) exit "$create_status" ;;
+        *) die "cannot verify container name collision for $name (status $exists_status)" ;;
+    esac
+done
+[[ -n "$container_id" ]] || die 'could not reserve a container name after 20 attempts'
+((pending_status == 0)) || exit "$pending_status"
+
+# Explicit stdin redirection prevents Bash replacing stdin with /dev/null.
+attached=1
+podman start --attach --interactive --sig-proxy=false "$container_id" <&0 &
 client_pid=$!
+((pending_status == 0)) || exit "$pending_status"
 status=0
 wait "$client_pid" || status=$?
+((pending_status == 0)) || exit "$pending_status"
+client_pid=''
 exit "$status"

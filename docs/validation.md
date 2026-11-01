@@ -268,3 +268,64 @@ exits where the EXIT handler can run; SIGKILL and host failure are excluded.
 | Explicit temporary mounts | Argument regression, `test_explicit_temporary_mounts`, image smoke and keyring lifecycle |
 | Scoped state umask | `test_private_state_symlink_and_scoped_umask` and `test_runtime_file_modes_by_execution_path` |
 | Diagnostic cleanup | `test_diagnostic_cleanup_all_exit_paths` and `test_diagnostic_cleanup_on_startup_signals` |
+
+
+## Bounded shutdown and build-context alignment (2026-11-01)
+
+Change: `harden-session-shutdown-and-build-context`. Checks used the existing
+Antigravity CLI 1.4.12 image, Linux amd64, and the same-host Unix rootless
+Podman 4.9.3 service on WSL2, with SELinux disabled and standard seccomp.
+Runtime state used a disposable native Linux volume at its original host path.
+
+Final checks passed:
+
+- `python3 -m unittest discover -s tests -p test_wrapper.py -v`:
+  **39 tests passed** in 126.591 seconds.
+- Bash syntax checks and ShellCheck 0.11.0 for all five shell scripts: passed.
+  ShellCheck ran through the existing `docker.io/koalaman/shellcheck:stable`
+  container because the host sandbox does not provide the executable.
+- `openspec validate harden-session-shutdown-and-build-context --strict` and
+  `git diff --check`: passed.
+
+`bash tests/run-runtime.sh` passed **14 tests** in 82.729 seconds. The new real
+shutdown check started a shell ignoring TERM, identified its unique workdir
+and owned container ID, interrupted the wrapper, observed bounded status 143,
+and confirmed that the owned container was gone while an unrelated stopped
+sentinel container survived. Test resources were removed afterward.
+
+The new build fixture used the actual `.containerignore` and both real helper
+sources. Podman successfully copied and installed the executable entrypoint
+and keyring helper. A `COPY .` inventory contained exactly the root-level
+`Containerfile`, `.containerignore`, `container-entrypoint.sh`, and
+`keyring-session.sh`. Synthetic unknown files, `.env`, local Gemini settings,
+keyring/state files, Git metadata, and nested same-named files were absent.
+The fixture image and synthetic context were removed. This verifies engine
+ignore matching independently of Git ignore rules without a release download.
+
+Wrapper lifecycle regressions exercise first-signal precedence in CLI and
+shell modes; CID publication before and after interruption; five-second
+interrupted-create completion followed by bounded cancellation; CID recovery
+from a TERM cancellation handler; stalled creation with no recoverable ID;
+ignored application TERM; stalled or failed kill/removal calls; and clients
+ignoring TERM. Real timeout budgets remain active, with a conservative
+30-second outer ceiling for combined failure paths. Normal exit statuses 0,
+23, and 125 survive failed or timed-out removal without create retries.
+Private bookkeeping directories use mode 0700; redirected output/error files
+use mode 0600 without changing the engine client's inherited umask.
+
+The full existing runtime suite also passed keyring/D-Bus persistence,
+wrong-passphrase/mismatch rejection, account locking, native API missing-key
+diagnostics, measured shell/API/account file modes, temporary mount limits and
+execution policies, workspace/worktree boundaries, and delegated child binds.
+No real Google OAuth or paid model request was repeated. Existing arm64,
+SELinux-enforcing, and internal sandbox limitations remain unchanged.
+
+Coreutils timeout is now a checked host prerequisite. Five seconds of
+application grace is one phase, not the total shutdown budget. Every engine
+forward/removal call has five seconds plus one second for KILL escalation;
+local client TERM grace is five seconds with at most one second for final
+observation/reaping. Successful client cancellation does not prove that a
+remote create request was cancelled: unresolved ownership is reported for
+manual inspection and never permits deletion by guessed name. Engine loss,
+SIGKILL, host failure, and uninterruptible kernel tasks can prevent resource
+removal despite bounded userspace cleanup attempts.

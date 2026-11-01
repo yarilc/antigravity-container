@@ -2,5 +2,4 @@ __pycache__/
 *.pyc
 .test-state/
 .agents
-/todo.md
-/misalignment.md
+todo.md

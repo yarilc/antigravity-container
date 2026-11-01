@@ -1,5 +1,7 @@
 """Opt-in checks against real rootless Podman; never uses real Google credentials."""
 import errno
+import signal
+import json
 import os
 from pathlib import Path
 import pty
@@ -96,6 +98,90 @@ class RuntimeTests(unittest.TestCase):
                 '--volume', f'{self.state}:/antigravity-home:rw',
                 '--entrypoint', '/usr/local/lib/antigravity/keyring-session.sh',
                 IMAGE, '/bin/bash', '-ec', script]
+
+    def test_build_context_allows_only_required_root_inputs(self):
+        context = self.base / 'build-context'
+        context.mkdir()
+        for name in ('.containerignore', 'container-entrypoint.sh', 'keyring-session.sh'):
+            shutil.copyfile(ROOT / name, context / name)
+        for name in ('unknown-file', '.env', '.gemini/settings.json', '.local/share/keyrings/token',
+                     '.git/config', 'custom-private-state/credentials', '.test-state/token',
+                     'nested/Containerfile', 'nested/container-entrypoint.sh',
+                     'nested/keyring-session.sh', 'nested/.containerignore', 'docs/readme'):
+            p = context / name
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text('DUMMY-NOT-A-CREDENTIAL')
+        (context / 'Containerfile').write_text(
+            'FROM ' + IMAGE + '\n'
+            'COPY container-entrypoint.sh /usr/local/bin/antigravity-entrypoint\n'
+            'COPY keyring-session.sh /usr/local/lib/antigravity/keyring-session.sh\n'
+            'RUN chmod 755 /usr/local/bin/antigravity-entrypoint /usr/local/lib/antigravity/keyring-session.sh\n'
+            'COPY . /antigravity-build-context/\n'
+            'RUN test -x /usr/local/bin/antigravity-entrypoint && '
+            'test -x /usr/local/lib/antigravity/keyring-session.sh && '
+            'cmp /usr/local/bin/antigravity-entrypoint /antigravity-build-context/container-entrypoint.sh && '
+            'cmp /usr/local/lib/antigravity/keyring-session.sh /antigravity-build-context/keyring-session.sh && '
+            'python3 -c ' + shlex.quote(
+                "from pathlib import Path; assert {str(p.relative_to('/antigravity-build-context')) "
+                "for p in Path('/antigravity-build-context').rglob('*')} == "
+                "{'Containerfile', '.containerignore', 'container-entrypoint.sh', 'keyring-session.sh'}") + '\n')
+        iid = self.base / 'fixture-image-id'
+        try:
+            result = subprocess.run(['podman', 'build', '--no-cache', '--iidfile', str(iid),
+                                     '--file', str(context / 'Containerfile'), str(context)],
+                                    capture_output=True, text=True, timeout=180)
+            self.assert_success(result)
+        finally:
+            if iid.exists():
+                subprocess.run(['podman', 'rmi', '--force', iid.read_text().strip()],
+                               check=True, capture_output=True, timeout=20)
+            shutil.rmtree(context)
+
+    def test_stubborn_shutdown_preserves_unrelated_container(self):
+        sentinel = subprocess.run(['podman', 'create', '--entrypoint', '/bin/true', IMAGE],
+                                  check=True, capture_output=True, text=True).stdout.strip()
+        proc = None
+        owned = None
+        try:
+            proc = subprocess.Popen([str(WRAPPER), '--container-shell'], cwd=self.project,
+                                    env=self.env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True)
+            proc.stdin.write("trap '' TERM\necho shutdown-ready\nwhile :; do sleep 1; done\n")
+            proc.stdin.close()
+            proc.stdin = None
+            self.assertTrue(select.select([proc.stdout], [], [], 15)[0], 'shell startup timed out')
+            self.assertEqual(proc.stdout.readline().strip(), 'shutdown-ready')
+            listed = subprocess.run(['podman', 'ps', '--format', 'json'], check=True,
+                                    capture_output=True, text=True)
+            matches = [c for c in json.loads(listed.stdout)
+                       if c.get('WorkingDir') == str(self.project)]
+            # Podman versions differ in ps JSON fields; inspect candidates to
+            # identify exactly the session mounted at this unique workdir.
+            if not matches:
+                for c in json.loads(listed.stdout):
+                    cid = c.get('Id') or c.get('ID')
+                    info = json.loads(subprocess.check_output(['podman', 'inspect', cid]))[0]
+                    if info['Config']['WorkingDir'] == str(self.project):
+                        matches.append({'Id': cid})
+            self.assertEqual(len(matches), 1)
+            owned = matches[0].get('Id') or matches[0].get('ID')
+            start = time.monotonic()
+            proc.send_signal(signal.SIGTERM)
+            out, err = proc.communicate(timeout=31)
+            elapsed = time.monotonic() - start
+            self.assertEqual(proc.returncode, 143, out + err)
+            self.assertLess(elapsed, 30)
+            self.assertGreaterEqual(elapsed, 3.8)
+            self.assertEqual(subprocess.run(['podman', 'container', 'exists', owned]).returncode, 1)
+            self.assertEqual(subprocess.run(['podman', 'container', 'exists', sentinel]).returncode, 0)
+        finally:
+            if proc is not None and proc.poll() is None:
+                proc.kill()
+                proc.communicate(timeout=5)
+            for cid in (owned, sentinel):
+                if cid:
+                    subprocess.run(['podman', 'rm', '--force', '--ignore', '--time', '0', cid],
+                                   check=True, capture_output=True, timeout=20)
 
     def test_image_smoke(self):
         script = (ROOT / 'tests/image-smoke.sh').read_text()

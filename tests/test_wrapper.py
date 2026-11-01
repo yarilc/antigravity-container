@@ -22,6 +22,10 @@ mask = os.umask(0)
 os.umask(mask)
 with pathlib.Path(str(log) + '.context').open('a') as f:
     f.write(json.dumps({'args': args, 'umask': mask, 'host': os.environ.get('CONTAINER_HOST')}) + '\n')
+def publish_cid():
+    if not os.environ.get('FAKE_MISSING_CID'):
+        pathlib.Path(args[args.index('--cidfile') + 1]).write_text(os.environ.get('FAKE_CID', 'a' * 64) + '\n')
+
 if args[:2] == ['--remote', '--url']:
     default = os.environ.get('FAKE_SOCKET_ROOTLESS', 'true') + ' ' + args[2][len('unix://'):]
     print(os.environ.get('FAKE_SOCKET_INFO', default))
@@ -36,6 +40,25 @@ elif args[0] == 'build':
 elif args[0] == 'ps':
     print(os.environ.get('FAKE_NAMES', ''))
 elif args[0] == 'create':
+    mode = os.environ.get('FAKE_CREATE_MODE', '')
+    if mode:
+        pathlib.Path(str(log) + '.pid').write_text(str(os.getpid()))
+        if mode in ('before', 'stall-owned'):
+            publish_cid()
+        if mode == 'cid-on-term':
+            def cancel(sig, frame):
+                publish_cid()
+                sys.exit(125)
+            signal.signal(signal.SIGTERM, cancel)
+        elif os.environ.get('FAKE_CLIENT_IGNORE_TERM'):
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        pathlib.Path(str(log) + '.creating').touch()
+        release = pathlib.Path(str(log) + '.release')
+        while not release.exists():
+            time.sleep(0.01)
+        if mode not in ('before', 'stall-owned'):
+            publish_cid()
+        sys.exit(0)
     if os.environ.get('FAKE_CREATE_WAIT'):
         pathlib.Path(str(log) + '.creating').touch()
         release = pathlib.Path(str(log) + '.release')
@@ -52,18 +75,37 @@ elif args[0] == 'create':
     if os.environ.get('FAKE_CREATE_FAILURE'):
         print('create failed', file=sys.stderr)
         sys.exit(125)
-    print('owned-test-container-id')
+    publish_cid()
+    print(os.environ.get('FAKE_STDOUT_CID', 'a' * 64))
 elif args[:2] == ['container', 'exists']:
-    sys.exit(0 if os.environ.get('FAKE_COLLISION') or os.environ.get('FAKE_ALL_COLLISIONS') else 1)
-elif args[0] == 'kill':
+    default = '0' if os.environ.get('FAKE_COLLISION') or os.environ.get('FAKE_ALL_COLLISIONS') else '1'
+    sys.exit(int(os.environ.get('FAKE_EXISTS_STATUS', default)))
+elif args[0] in ('kill', 'rm'):
+    if os.environ.get('FAKE_CONTROL_STALL') in (args[0], 'both'):
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        time.sleep(60)
+    status = int(os.environ.get('FAKE_' + args[0].upper() + '_STATUS', '0'))
+    if status:
+        sys.exit(status)
     pid = pathlib.Path(str(log) + '.pid')
-    if pid.exists():
-        os.kill(int(pid.read_text()), signal.SIGTERM)
+    if pid.exists() and (args[0] == 'rm' or not os.environ.get('FAKE_IGNORE_SIGNAL')):
+        sig = signal.SIGKILL if args[0] == 'rm' else getattr(signal, 'SIG' + args[args.index('--signal')+1])
+        try:
+            os.kill(int(pid.read_text()), sig)
+        except ProcessLookupError:
+            pass
 elif args[0] == 'start':
     if os.environ.get('FAKE_WAIT'):
+        def stop(sig, frame):
+            sys.exit(128 + sig)
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            signal.signal(sig, stop)
+        if os.environ.get('FAKE_CLIENT_IGNORE_TERM'):
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
         pathlib.Path(str(log) + '.pid').write_text(str(os.getpid()))
         pathlib.Path(str(log) + '.started').touch()
-        time.sleep(20)
+        while True:
+            time.sleep(0.05)
     if not os.environ.get('FAKE_NO_STDIN'):
         print('stdin:' + sys.stdin.read())
     sys.exit(int(os.environ.get('FAKE_EXIT', '0')))
@@ -236,11 +278,12 @@ class WrapperTests(unittest.TestCase):
         for mask in (0o022, 0o002):
             if self.state.exists():
                 self.state.rmdir()
+            Path(str(self.log) + '.context').unlink(missing_ok=True)
             result = self.run_wrapper(mask=mask)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(self.state.stat().st_mode & 0o777, 0o700)
             context = [json.loads(s) for s in Path(str(self.log) + '.context').read_text().splitlines()]
-            self.assertTrue(all(c['umask'] == mask for c in context[-6:]))
+            self.assertTrue(all(c['umask'] == mask for c in context))
         alias = self.base / 'state-alias'
         alias.symlink_to(self.state)
         self.log.unlink()
@@ -405,15 +448,21 @@ class WrapperTests(unittest.TestCase):
             self.assert_no_image_operations()
 
     def test_launch_endpoint_rejected_before_query(self):
-        for env in ({'CONTAINER_HOST': 'unix:///'},
-                    {'CONTAINER_HOST': 'unix://relative.sock'},
-                    {'CONTAINER_HOST': 'tcp://localhost:1234'},
-                    {'CONTAINER_HOST': 'ssh://host'},
-                    {'CONTAINER_CONNECTION': 'named'}):
-            with self.subTest(env=env):
+        cases = ({'CONTAINER_HOST': 'unix:///'},
+                 {'CONTAINER_HOST': 'unix:////'},
+                 {'CONTAINER_HOST': 'unix://///////'},
+                 {'CONTAINER_HOST': 'unix://relative.sock'},
+                 {'CONTAINER_HOST': 'tcp://localhost:1234'},
+                 {'CONTAINER_HOST': 'ssh://host'},
+                 {'CONTAINER_CONNECTION': 'named'})
+        for options, env in itertools.product(((), ('--container-build',)), cases):
+            with self.subTest(options=options, env=env):
                 self.log.unlink(missing_ok=True)
-                self.assertNotEqual(self.run_wrapper(**env).returncode, 0)
+                self.assertNotEqual(self.run_wrapper(*options, **env).returncode, 0)
                 self.assertFalse(self.calls())
+        for endpoint in ('unix:///run/user/1000/podman.sock', 'unix:////run/podman.sock'):
+            self.assertEqual(self.run_wrapper(CONTAINER_HOST=endpoint,
+                                              FAKE_INFO='true linux true').returncode, 0)
 
     def test_build_location_refresh_and_missing_image(self):
         self.assertEqual(self.run_wrapper('--container-build').returncode, 0)
@@ -433,7 +482,7 @@ class WrapperTests(unittest.TestCase):
         for status in ('7', '125'):
             result = self.run_wrapper(FAKE_EXIT=status)
             self.assertEqual(result.returncode, int(status))
-            self.assertIn(['rm', '--force', '--ignore', 'owned-test-container-id'], self.calls())
+            self.assertIn(['rm', '--force', '--ignore', '--time', '0', 'a' * 64], self.calls())
 
     def test_existing_names_and_collision_retry(self):
         result = self.run_wrapper(FAKE_NAMES='my-project-2\nmy-project-09\nother-50', FAKE_COLLISION='1')
@@ -500,6 +549,180 @@ class WrapperTests(unittest.TestCase):
                         release.touch()
                         proc.kill()
                         proc.communicate(timeout=5)
+
+    def start_wrapper(self, *options, **env):
+        return subprocess.Popen([str(WRAPPER), *options], cwd=self.project,
+                                env=self.env | env, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    def wait_marker(self, suffix, proc):
+        marker = Path(str(self.log) + suffix)
+        deadline = time.monotonic() + 5
+        while not marker.exists() and proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(marker.exists(), 'fake engine did not become ready')
+
+    def assert_owned_removal(self):
+        removals = [c for c in self.calls() if c[0] == 'rm']
+        self.assertEqual(removals, [['rm', '--force', '--ignore', '--time', '0', 'a' * 64]])
+
+    def finish_process(self, proc):
+        # A failed assertion must not leave a blocked fake client behind.
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate(timeout=5)
+        pid = Path(str(self.log) + '.pid')
+        if pid.exists():
+            try:
+                os.kill(int(pid.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    def test_private_cid_ownership_and_collision_errors(self):
+        result = self.run_wrapper(FAKE_STDOUT_CID='untrusted-stdout')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_owned_removal()
+        for env in ({'FAKE_MISSING_CID': '1'}, {'FAKE_CID': 'not-an-id'},
+                    {'FAKE_CID': 'b' * 64 + '\n' + 'extra'},
+                    {'FAKE_CREATE_FAILURE': '1', 'FAKE_EXISTS_STATUS': '125'}):
+            with self.subTest(env=env):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(**env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(any(c[0] in ('start', 'rm') for c in self.calls()))
+                self.assertEqual(len([c for c in self.calls() if c[0] == 'create']), 1)
+                self.assertEqual(list(self.diagnostics.iterdir()), [])
+
+    def test_creation_signal_ownership_races(self):
+        for mode, sig in itertools.product(('before', 'after'),
+                                           (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)):
+            with self.subTest(mode=mode, sig=sig):
+                self.log.unlink(missing_ok=True)
+                for suffix in ('.creating', '.release'):
+                    Path(str(self.log) + suffix).unlink(missing_ok=True)
+                proc = self.start_wrapper(FAKE_CREATE_MODE=mode)
+                try:
+                    self.wait_marker('.creating', proc)
+                    session = next(self.diagnostics.iterdir())
+                    self.assertEqual(session.stat().st_mode & 0o777, 0o700)
+                    self.assertEqual((session / 'error').stat().st_mode & 0o077, 0)
+                    proc.send_signal(sig)
+                    # Hold creation beyond signal delivery, then allow success.
+                    time.sleep(0.05)
+                    Path(str(self.log) + '.release').touch()
+                    out, err = proc.communicate(timeout=10)
+                    self.assertEqual(proc.returncode, 128 + sig, out + err)
+                    self.assertFalse(any(c[0] == 'start' for c in self.calls()))
+                    self.assert_owned_removal()
+                    self.assertEqual(list(self.diagnostics.iterdir()), [])
+                finally:
+                    self.finish_process(proc)
+
+    def test_stalled_creation_cancellation_is_bounded(self):
+        for mode in ('stall', 'stall-owned', 'cid-on-term'):
+            with self.subTest(mode=mode):
+                self.log.unlink(missing_ok=True)
+                Path(str(self.log) + '.creating').unlink(missing_ok=True)
+                Path(str(self.log) + '.release').unlink(missing_ok=True)
+                proc = self.start_wrapper(FAKE_CREATE_MODE=mode,
+                                          FAKE_CLIENT_IGNORE_TERM='1' if mode == 'stall' else '')
+                try:
+                    self.wait_marker('.creating', proc)
+                    start = time.monotonic()
+                    proc.send_signal(signal.SIGTERM)
+                    time.sleep(0.1)
+                    proc.send_signal(signal.SIGHUP)
+                    out, err = proc.communicate(timeout=31)
+                    self.assertLess(time.monotonic() - start, 30)
+                    self.assertEqual(proc.returncode, 143, out + err)
+                    self.assertFalse(any(c[0] == 'start' for c in self.calls()))
+                    if mode == 'stall':
+                        self.assertIn('creation outcome unresolved', err)
+                        self.assertFalse(any(c[0] == 'rm' for c in self.calls()))
+                    else:
+                        self.assert_owned_removal()
+                    self.assertEqual(list(self.diagnostics.iterdir()), [])
+                finally:
+                    self.finish_process(proc)
+
+    def test_attached_signal_matrix(self):
+        for shell, sig in itertools.product((False, True),
+                                           (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)):
+            with self.subTest(shell=shell, sig=sig):
+                self.log.unlink(missing_ok=True)
+                Path(str(self.log) + '.started').unlink(missing_ok=True)
+                proc = self.start_wrapper(*(('--container-shell',) if shell else ()), FAKE_WAIT='1')
+                try:
+                    self.wait_marker('.started', proc)
+                    proc.send_signal(sig)
+                    out, err = proc.communicate(timeout=10)
+                    self.assertEqual(proc.returncode, 128 + sig, out + err)
+                    self.assertEqual([c for c in self.calls() if c[0] == 'kill'],
+                                     [['kill', '--signal', signal.Signals(sig).name[3:], 'a' * 64]])
+                    self.assertIn('--sig-proxy=false', next(c for c in self.calls() if c[0] == 'start'))
+                    self.assert_owned_removal()
+                    self.assert_client_gone()
+                finally:
+                    self.finish_process(proc)
+
+    def assert_client_gone(self):
+        pid = int(Path(str(self.log) + '.pid').read_text())
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+
+    def test_stubborn_sessions_and_control_failures_are_bounded(self):
+        cases = ({}, {'FAKE_CONTROL_STALL': 'kill'}, {'FAKE_KILL_STATUS': '125'},
+                 {'FAKE_CONTROL_STALL': 'rm', 'FAKE_CLIENT_IGNORE_TERM': '1'},
+                 {'FAKE_RM_STATUS': '125'},
+                 {'FAKE_CONTROL_STALL': 'both', 'FAKE_CLIENT_IGNORE_TERM': '1'})
+        for env in cases:
+            with self.subTest(env=env):
+                self.log.unlink(missing_ok=True)
+                Path(str(self.log) + '.started').unlink(missing_ok=True)
+                proc = self.start_wrapper(FAKE_WAIT='1', FAKE_IGNORE_SIGNAL='1', **env)
+                try:
+                    self.wait_marker('.started', proc)
+                    start = time.monotonic()
+                    proc.send_signal(signal.SIGTERM)
+                    time.sleep(0.1)
+                    proc.send_signal(signal.SIGHUP)
+                    out, err = proc.communicate(timeout=31)
+                    elapsed = time.monotonic() - start
+                    self.assertLess(elapsed, 30)
+                    self.assertEqual(proc.returncode, 143, out + err)
+                    if not env:
+                        self.assertGreaterEqual(elapsed, 3.8)
+                    if env.get('FAKE_CONTROL_STALL') in ('kill', 'both') or env.get('FAKE_KILL_STATUS'):
+                        self.assertIn('cannot forward TERM', err)
+                    if env.get('FAKE_CONTROL_STALL') in ('rm', 'both') or env.get('FAKE_RM_STATUS'):
+                        self.assertIn('cannot remove owned container', err)
+                    self.assert_owned_removal()
+                    self.assert_client_gone()
+                    self.assertEqual(list(self.diagnostics.iterdir()), [])
+                finally:
+                    self.finish_process(proc)
+
+    def test_application_status_survives_cleanup_failure(self):
+        for status, removal in itertools.product(('0', '23', '125'), ('ok', 'failed', 'stalled')):
+            with self.subTest(status=status, removal=removal):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(FAKE_EXIT=status,
+                                          FAKE_RM_STATUS='125' if removal == 'failed' else '0',
+                                          FAKE_CONTROL_STALL='rm' if removal == 'stalled' else '')
+                self.assertEqual(result.returncode, int(status), result.stderr)
+                self.assertEqual(len([c for c in self.calls() if c[0] == 'create']), 1)
+                self.assert_owned_removal()
+                self.assertEqual('cannot remove owned container' in result.stderr, removal != 'ok')
+                self.assertEqual(list(self.diagnostics.iterdir()), [])
+
+    def test_timeout_prerequisite_without_help_side_effects(self):
+        hook = self.base / 'no-timeout'
+        hook.write_text('command() { if [[ "$*" == "-v timeout" ]]; then return 1; else builtin command "$@"; fi; }\n')
+        result = self.run_wrapper(BASH_ENV=str(hook))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('coreutils timeout', result.stderr)
+        self.assertFalse(any(c[0] == 'create' for c in self.calls()))
+        self.assertEqual(self.run_wrapper('--container-help', BASH_ENV=str(hook)).returncode, 0)
 
     def test_key_forwarded_by_name_without_value_in_argv(self):
         result = self.run_wrapper(GEMINI_API_KEY='test-key-do-not-log')

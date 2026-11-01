@@ -11,7 +11,7 @@ home. YOLO and access to the host Podman service are independent opt-ins.
 ## Requirements
 
 The host needs Linux, Bash 4.3+, Podman with a rootless engine, and standard
-utilities (`id`, `readlink`, `dirname`, `mkdir`, `sed`, `stat`, `mktemp`). No host Node,
+utilities (`id`, `readlink`, `dirname`, `mkdir`, `sed`, `stat`, `mktemp`, and coreutils `timeout`). No host Node,
 Python, Google CLI, browser service, or keyring service is required. Network
 access is needed to build the image, sign in, and contact model services.
 Linux amd64 is verified in the recorded test environment. Linux arm64 is an
@@ -135,7 +135,9 @@ engine response confirming Linux, rootless `true`, and a valid remote-service
 boolean. Missing fields, extra fields, additional lines (including blank lines),
 query failures, rootful engines, and non-Linux engines stop startup.
 An explicit Unix launch endpoint must contain an absolute socket path;
-`CONTAINER_HOST=unix:///` is rejected before contacting Podman. Named remote
+`CONTAINER_HOST=unix:///`, `unix:////`, and longer slash-only paths are rejected
+before contacting Podman. A valid example is
+`CONTAINER_HOST=unix:///run/user/1000/podman/podman.sock`. Named remote
 connections, TCP/SSH transports, and implicit remote contexts are unsupported.
 A local engine or an explicit same-host Unix service is supported, including
 when this wrapper runs inside another container. Launch-engine selection is
@@ -337,12 +339,30 @@ uses `noexec` with a 32 MiB limit. All three use `nosuid,nodev`, writable mode
 inside `/tmp` remains private with mode `0700`. No full host home, host OpenSpec
 settings, host certificates, or SSH configuration is mounted automatically.
 
-Each session reserves a workspace-index name and removes its own container at
-termination. Temporary container-creation diagnostics are removed on normal exit,
-creation failure, exhausted naming retries, unexpected failures, and handled
-TERM/INT/HUP interruptions. Cleanup preserves error output and status and
-removes only the session's own container. SIGKILL and host failure cannot run
-EXIT cleanup. Existing sessions are not deleted to resolve a name collision.
+Each session reserves a workspace-index name. Creation records the full owned
+container ID in a private CID file independently of client stdout. A signal
+during creation prevents attachment: the wrapper waits up to five seconds for
+creation, then bounds client cancellation and reads the CID again. It removes
+only a verified owned ID. An unresolved remote creation outcome is reported
+for manual inspection; a guessed name is never used for deletion. Existing
+sessions are not removed to resolve a name collision.
+
+TERM/INT/HUP are forwarded once to the attached owned session and produce
+exit status 143/130/129. The first handled signal determines the result;
+repeated signals do not restart shutdown. After successful forwarding, the
+application has up to five seconds to exit gracefully before forced removal.
+Engine forwarding and removal calls each use a five-second deadline with
+one-second KILL escalation. Local client termination allows five seconds
+before KILL and at most one second for final observation/reaping. These are
+separate phase budgets, not a five-second total shutdown promise. Ordinary
+builds and running sessions have no imposed runtime limit.
+
+Cleanup reports failures without replacing the primary application or signal
+status, including application exit 125. If removal fails, inspect the reported
+owned ID and remove it manually once the engine is reachable. Temporary
+creation output and ownership bookkeeping are removed on handled exits.
+SIGKILL, engine loss, or host failure can leave residual containers. An
+uninterruptible kernel task is outside a userspace timing guarantee.
 Separate state directories provide separate authentication profiles. An account
 session holds an exclusive lock on its keyring directory to prevent independent
 daemons from overwriting a shared collection. Another account session using
@@ -407,6 +427,19 @@ Sources: [Google quickstart](https://antigravity.google/docs/getting-started?tab
 [troubleshooting](https://antigravity.google/docs/cli/troubleshooting),
 [sandbox](https://antigravity.google/docs/sandbox/), and
 [Podman API security](https://docs.podman.io/en/latest/markdown/podman-system-service.1.html).
+
+## Image build context
+
+`.containerignore` denies local build inputs by default. Only the root-level
+`Containerfile`, `container-entrypoint.sh`, `keyring-session.sh`, and
+`.containerignore` are allowed. The recipe still copies both executable runtime
+helpers. Unknown files, local configuration or credentials, state, and nested
+directories stay excluded, including nested files with an allowed basename.
+These rules apply independently of `.gitignore` and whether a file is tracked.
+
+When adding a deliberate local COPY/ADD input, add its exact root-level entry
+to the allowlist and extend the real build-context inventory regression. Do
+not replace the deny-all policy with a growing list of sensitive exclusions.
 
 ## Updates and rollback
 
