@@ -32,6 +32,15 @@ Environment:
   ANTIGRAVITY_CONTAINER_PODMAN_SOCKET
     default: ${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock
   GEMINI_API_KEY                    forwarded if set; requires modelProvider: gemini
+  ANTIGRAVITY_CONTAINER_MEMORY_LIMIT  session memory, integer with k/m/g unit (default: 4g)
+  ANTIGRAVITY_CONTAINER_CPU_LIMIT     session CPUs, up to 3 decimals (default: 2)
+  ANTIGRAVITY_CONTAINER_PIDS_LIMIT    session process limit (default: 512)
+    Budgets cannot be disabled; they require delegated rootless cgroup v2
+    cpu/memory/pids controllers
+  ANTIGRAVITY_CONTAINER_RUN_TIMEOUT   session container lifetime in whole seconds
+    (default: 0, disabled by default)
+  ANTIGRAVITY_CONTAINER_ALLOW_UNSAFE_WORKSPACE  exact 1 permits a refused
+    sensitive workspace with a warning (default: disabled)
 
 YOLO accepts 1/true/yes or 0/false/no, case-insensitively; empty is disabled.
 Podman delegation is enabled only with exact ANTIGRAVITY_CONTAINER_PODMAN=1.
@@ -42,6 +51,15 @@ Native CLI flags and existing permissions still apply when YOLO is disabled.
 The Podman socket grants control over the host user's containers and permits
 host mounts beyond the workspace. It removes the project-only access boundary.
 Worktree mode exposes the entire parent, including siblings, read/write.
+
+Every session drops all capabilities and sets no-new-privileges; no
+security-policy overrides are added. Budgets and tmpfs sizes do not limit
+workspace or state storage growth. The writable workspace (or worktree parent)
+must not physically be /, /home, /root, /etc, /usr, /var, /bin, /sbin, /lib,
+/lib64, /boot, /opt, /srv, /mnt, /media, /proc, /sys, /dev, /run, /tmp, the
+caller's home or a /mnt/<letter> drive root; descendants such as
+/mnt/d/project are allowed. When the lifetime limit stops a session, a notice
+is printed and the engine client's exit status is returned.
 EOF
 }
 
@@ -69,6 +87,56 @@ boolean() {
 yolo=$(boolean ANTIGRAVITY_YOLO "${ANTIGRAVITY_YOLO:-}")
 podman_access=0
 [[ "${ANTIGRAVITY_CONTAINER_PODMAN:-}" != 1 ]] || podman_access=1
+
+# Session budgets and lifetime, validated before any engine or state operation.
+# Same rules and messages as the claude-container reference (sandbox-ref-2).
+# Only an unset budget selects its default; no value disables a budget.
+memory_text=${ANTIGRAVITY_CONTAINER_MEMORY_LIMIT-4g}
+cpu_text=${ANTIGRAVITY_CONTAINER_CPU_LIMIT-2}
+pids_text=${ANTIGRAVITY_CONTAINER_PIDS_LIMIT-512}
+timeout_text=${ANTIGRAVITY_CONTAINER_RUN_TIMEOUT:-0}
+memory_bytes=0
+if [[ "$memory_text" =~ ^([1-9][0-9]{0,15})([kmgKMG])$ ]]; then
+    case "${BASH_REMATCH[2],,}" in
+        k) unit=1024 ;;
+        m) unit=1048576 ;;
+        *) unit=1073741824 ;;
+    esac
+    ((10#${BASH_REMATCH[1]} > (1 << 50) / unit)) || memory_bytes=$((10#${BASH_REMATCH[1]} * unit))
+fi
+((memory_bytes > 0)) || die 'ANTIGRAVITY_CONTAINER_MEMORY_LIMIT must be a positive integer with unit k, m or g, for example 4g'
+cpu_nano=0
+if [[ "$cpu_text" =~ ^([0-9]{1,4})(\.([0-9]{1,3}))?$ ]]; then
+    fraction=${BASH_REMATCH[3]}000
+    cpu_nano=$((10#${BASH_REMATCH[1]} * 1000000000 + 10#${fraction:0:3} * 1000000))
+    ((cpu_nano <= 1024000000000)) || cpu_nano=0
+fi
+((cpu_nano > 0)) || die 'ANTIGRAVITY_CONTAINER_CPU_LIMIT must be a positive number of CPUs with at most 3 decimals, for example 2 or 1.5'
+[[ "$pids_text" =~ ^(0|[1-9][0-9]{0,9})$ ]] && ((pids_text > 0 && pids_text <= 4194304)) \
+    || die 'ANTIGRAVITY_CONTAINER_PIDS_LIMIT must be a positive integer process count up to 4194304'
+[[ "$timeout_text" =~ ^(0|[1-9][0-9]{0,9})$ ]] && ((timeout_text <= 2147483647)) \
+    || die 'ANTIGRAVITY_CONTAINER_RUN_TIMEOUT must be whole seconds; 0 disables the lifetime limit'
+pids_limit=$((10#$pids_text))
+run_timeout=$((10#$timeout_text))
+
+# Refuse sensitive writable workspaces before any engine or state operation.
+workspace=$(pwd -P)
+workspace_mount=$workspace
+((git_worktree == 0)) || workspace_mount=$(dirname -- "$workspace")
+[[ "${HOME:-}" == /* ]] || die 'HOME must be an absolute path'
+# A missing home cannot be a workspace, so its lexical path is sufficient then.
+physical_home=$(cd -- "$HOME" 2>/dev/null && pwd -P) || physical_home=$HOME
+unsafe_workspace=0
+case "$workspace_mount" in
+    /|/home|/root|/etc|/usr|/var|/bin|/sbin|/lib|/lib64|/boot|/opt|/srv|/mnt|/media|/proc|/sys|/dev|/run|/tmp)
+        unsafe_workspace=1 ;;
+esac
+[[ "$workspace_mount" != "$physical_home" && ! "$workspace_mount" =~ ^/mnt/[A-Za-z]$ ]] || unsafe_workspace=1
+if ((unsafe_workspace)); then
+    [[ "${ANTIGRAVITY_CONTAINER_ALLOW_UNSAFE_WORKSPACE:-}" == 1 ]] \
+        || die "refusing sensitive workspace $workspace_mount; launch from a project subdirectory or set exact ANTIGRAVITY_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1"
+    printf 'antigravity-container: WARNING: sensitive workspace explicitly exposed read/write: %s\n' "$workspace_mount" >&2
+fi
 
 command -v podman >/dev/null || die 'Podman is required on the host'
 command -v timeout >/dev/null || die 'coreutils timeout is required for bounded session cleanup'
@@ -120,9 +188,6 @@ fi
 
 script_path=$(readlink -f -- "${BASH_SOURCE[0]}")
 script_dir=$(dirname -- "$script_path")
-workspace=$(pwd -P)
-workspace_mount=$workspace
-((git_worktree == 0)) || workspace_mount=$(dirname -- "$workspace")
 image="${ANTIGRAVITY_CONTAINER_IMAGE:-localhost/antigravity-cli:latest}"
 state_dir="${ANTIGRAVITY_CONTAINER_STATE_DIR:-$HOME/.local/share/antigravity-container/home}"
 
@@ -148,6 +213,8 @@ fi
 container_args=(
     --rm --interactive --read-only --read-only-tmpfs=false
     --userns=keep-id --user "$caller_uid:$caller_gid"
+    --cap-drop=all --security-opt=no-new-privileges
+    "--memory=$memory_bytes" "--cpus=$cpu_text" "--pids-limit=$pids_limit"
     --workdir "$workspace"
     --tmpfs '/tmp:rw,exec,nosuid,nodev,mode=1777,size=512m'
     --tmpfs '/run:rw,nosuid,nodev,noexec,mode=1777,size=32m'
@@ -158,6 +225,7 @@ container_args=(
     --volume "$workspace_mount:$workspace_mount:rw"
     --volume "$state_dir:/antigravity-home:rw"
 )
+((run_timeout == 0)) || container_args+=(--timeout "$run_timeout")
 if [[ -t 0 && -t 1 ]]; then
     container_args+=(--tty)
     [[ -z "${TERM:-}" ]] || container_args+=(--env TERM)
@@ -321,8 +389,18 @@ done
 [[ -n "$container_id" ]] || die 'could not reserve a container name after 20 attempts'
 ((pending_status == 0)) || exit "$pending_status"
 
+# Engine flags alone are not evidence: require the created configuration to
+# carry every selected budget before the application starts.
+configured_budgets=$(timeout --kill-after=1s 10s podman inspect --type container \
+    --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}}' "$container_id") \
+    || die 'Cannot inspect session resource budgets; session not started'
+((pending_status == 0)) || exit "$pending_status"
+[[ "$configured_budgets" == "$memory_bytes $cpu_nano $pids_limit" ]] \
+    || die "Session resource budgets were not applied (expected memory=$memory_bytes nano_cpus=$cpu_nano pids=$pids_limit); check rootless cgroup v2 cpu/memory/pids controller delegation; session not started"
+
 # Explicit stdin redirection prevents Bash replacing stdin with /dev/null.
 attached=1
+started_at=$SECONDS
 podman start --attach --interactive --sig-proxy=false "$container_id" <&0 &
 client_pid=$!
 ((pending_status == 0)) || exit "$pending_status"
@@ -330,4 +408,7 @@ status=0
 wait "$client_pid" || status=$?
 ((pending_status == 0)) || exit "$pending_status"
 client_pid=''
+if ((run_timeout > 0 && status != 0 && SECONDS - started_at >= run_timeout)); then
+    printf 'antigravity-container: session lifetime limit reached (%s s); exit status %s\n' "$run_timeout" "$status" >&2
+fi
 exit "$status"
