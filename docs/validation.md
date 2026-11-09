@@ -340,3 +340,48 @@ The OpenSpec capabilities were renamed to the scheme shared by the five wrappers
 | `container-authentication` | `agent-authentication` |
 
 `openspec validate --specs` passed: 5 specs, 0 failures.
+
+## Session hardening baseline (B01–B05): 2026-11-09
+
+Change `harden-session-baseline` (Wave 2), ported from the `claude-container`
+reference at tag `sandbox-ref-2` and the matching Codex change. Host: WSL2
+x86_64, kernel 6.6.87.2-microsoft-standard-WSL2, rootless Podman 4.9.3 with
+cgroup v2. No credentials, Google login or model requests were used.
+
+Pre-change baseline with image `5c425a152ccc` (agy 1.4.12 from the latest-release
+installer, OpenSpec 1.16.0 unpinned): capability sets 0 except bounding
+`00000000800405fb`, `NoNewPrivs` 0, `memory.max` `max`, `pids.max` 2048 (engine
+default), `cpu.max` `max 100000`. The existing runtime suite passed 14 tests.
+Before changing the wrapper, the same image was run with `--cap-drop=all`,
+`--security-opt=no-new-privileges` and the default budgets: a private
+`dbus-run-session` with `gnome-keyring-daemon --unlock` reported the collection
+unlocked, `secret-tool` stored and looked up a dummy secret, and Bubblewrap and
+the delegated Podman client worked. No capability was needed.
+
+After the change, image `ec5d5f1df09e` built from the pinned recipe: base
+`docker.io/library/node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da`,
+`agy --version` `1.5.3` from the recorded `linux-x64` artifact and SHA-512,
+`openspec --version` `1.16.0`. A build with a wrong SHA-512 failed at
+`sha512sum --check` and produced no image. The arm64 artifact and checksum are
+recorded from the official manifest but were not built on this host.
+
+| Check | Result |
+| --- | --- |
+| `tests/test_wrapper.py` (runner container) | Initial run: 2 failures and 1 error, because the existing fake engine keeps its call log across invocations; the ported tests now clear it. Then 1 failure: a fast exit with a 1-second limit printed the lifetime notice because Bash `SECONDS` has whole-second granularity; the test uses a 2-second limit and a 30-second limit for the early exit. Rerun: passed, 48 tests |
+| `tests/test_image_pins.py` | Passed: 2 tests, including mutated recipes (tag-only base, `@latest`, unversioned OpenSpec, installer, manifest URL, missing or malformed SHA-512, missing architecture, version mismatch, missing verification) |
+| `bash tests/run-runtime.sh` | Initial run: 2 failures, because two unrelated `pi-container` containers named `project-with-spaces-*` (created 2026-11-03) were present; the checks now compare the session list before and after. Rerun: passed, 18 tests |
+| Effective hardening | All capability sets 0, `NoNewPrivs` 1, private cgroup namespace; `memory.max`, `pids.max` and `cpu.max` matched 4 GiB/512/2 CPUs and 1536 MiB/256/1.5 CPUs, with and without delegation; 80 children with a 32-process budget failed as expected |
+| Keyring under hardening | The keyring runtime tests now run with the wrapper's capability drop, no-new-privileges and default budgets: creation, persistence, wrong passphrase, missing terminal, mismatch and concurrent locking passed |
+| Tools under hardening | Bubblewrap, Git, OpenSpec, image smoke, the build-context inventory and a delegated child container passed. The Gemini API-key missing-key diagnostic passed without a terminal |
+| Lifetime | `ANTIGRAVITY_CONTAINER_RUN_TIMEOUT=3` stopped `sleep 60`; the client returned 255, the notice was printed and the owned container was removed. An early `exit 7` returned 7 without a notice |
+| Refused workspace | A launch with the workspace equal to `HOME` exited 1 before any engine operation |
+| `bash -n`, `git diff --check`, `openspec validate harden-session-baseline --strict` | Passed |
+
+Known limitation shared with the reference wrappers: the lifetime notice
+compares whole seconds, so with a 1-second limit a fast non-zero exit can
+print the notice; the exit status is never altered. Not covered by the
+automated checks: the Python budget module, setup questions and qualification
+binding (Wave 3).
+
+Operator check, 2026-11-09: authenticated account login with agy 1.5.3 on the
+hardened, pinned image succeeded.

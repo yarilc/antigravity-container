@@ -381,6 +381,39 @@ supporting paths remapped inside an outer container.
 TCP/SSH transports, named remote connections, Podman Machine, and rootful
 engines are rejected.
 
+### Session hardening, budgets and lifetime
+
+Every agy and shell session, with or without Podman delegation and YOLO and in
+both account and Gemini API-key modes, runs with `--cap-drop=all` and
+`--security-opt=no-new-privileges`. The private D-Bus session, the dedicated
+GNOME keyring, Bubblewrap, Git, OpenSpec and the delegated Podman client work
+under these settings. The wrapper never adds capabilities back to work around
+a tool; such a limitation is recorded in `docs/validation.md`. Delegation
+still grants host engine authority beyond these limits.
+
+Every session has memory, CPU and process budgets (defaults 4 GiB, 2 CPUs and
+512 processes; see [Environment](#environment)). Only an unset variable selects
+the default; no value disables a budget, and an invalid value stops the wrapper
+before any engine query. After creating the container, the wrapper checks that
+the engine applied every budget and stops before agy starts otherwise. Budgets
+need delegated rootless cgroup v2 `cpu`, `memory` and `pids` controllers.
+Budgets and tmpfs sizes do not limit workspace or state storage growth.
+
+`ANTIGRAVITY_CONTAINER_RUN_TIMEOUT` optionally sets the session container
+lifetime in whole seconds; unset, empty or `0` disables it. When the engine
+stops a session at the limit, the wrapper prints
+`antigravity-container: session lifetime limit reached (N s); exit status S`
+and returns the Podman client status (255 on the measured Podman 4.9.3).
+
+The writable workspace, or the `--container-git-worktree` parent, is refused
+when its physical path is `/`, `/home`, `/root`, `/etc`, `/usr`, `/var`, `/bin`,
+`/sbin`, `/lib`, `/lib64`, `/boot`, `/opt`, `/srv`, `/mnt`, `/media`, `/proc`,
+`/sys`, `/dev`, `/run`, `/tmp`, your physical home directory, or a WSL drive
+root such as `/mnt/d`. Subdirectories such as `/mnt/d/Workspace/project` are
+allowed. Launch from a project directory, or set exactly
+`ANTIGRAVITY_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1` to expose a refused directory
+deliberately; the wrapper then prints a warning.
+
 ## Environment
 
 | Variable | Default |
@@ -390,6 +423,11 @@ engines are rejected.
 | `ANTIGRAVITY_YOLO` | disabled |
 | `ANTIGRAVITY_CONTAINER_PODMAN` | disabled |
 | `ANTIGRAVITY_CONTAINER_PODMAN_SOCKET` | `${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock` |
+| `ANTIGRAVITY_CONTAINER_MEMORY_LIMIT` | `4g` (positive integer with unit `k`, `m` or `g`) |
+| `ANTIGRAVITY_CONTAINER_CPU_LIMIT` | `2` (positive number of CPUs, at most 3 decimals, up to 1024) |
+| `ANTIGRAVITY_CONTAINER_PIDS_LIMIT` | `512` (integer from 1 to 4194304) |
+| `ANTIGRAVITY_CONTAINER_RUN_TIMEOUT` | `0`, disabled (whole seconds) |
+| `ANTIGRAVITY_CONTAINER_ALLOW_UNSAFE_WORKSPACE` | disabled; only exact `1` enables it |
 
 When the wrapper already uses a local Unix `CONTAINER_HOST`, that accessible
 socket is the default service endpoint instead. An explicit
@@ -403,14 +441,17 @@ the entire environment and `.env` files are not imported by the wrapper.
 The base is `docker.io/library/node:22-bookworm-slim`: Debian 12 provides glibc
 2.36, exceeding the Linux thresholds published on Google's download page, and
 Node 22 runs OpenSpec. This is the project's choice, not an image prescribed
-by Google. `agy` is installed as a native executable using the
-[official installer](https://antigravity.google/cli/install.sh), including its
-platform manifest and SHA-512 verification. No npm Antigravity substitute,
+by Google; the base is pinned by digest. `agy` is installed as a native
+executable from a recorded official release artifact for amd64 or arm64, whose
+URL and SHA-512 come from Google's platform manifest and are pinned in
+`Containerfile` (`AGY_VERSION`, `AGY_URL_*`, `AGY_SHA512_*`). OpenSpec is pinned
+by `OPENSPEC_VERSION`. Other architectures fail the build explicitly.
+`tests/test_image_pins.py` rejects floating inputs. No npm Antigravity substitute,
 graphical IDE, Python SDK, or browser is installed.
 
 | Group | Packages/tools | Purpose |
 | --- | --- | --- |
-| Installer/ABI | bash, ca-certificates, curl, coreutils, sed, grep, tar, gzip, libc6, libstdc++6, libgcc-s1 | Official installer operations, HTTPS, archive extraction, native compatibility |
+| Download/ABI | bash, ca-certificates, curl, coreutils, sed, grep, tar, gzip, libc6, libstdc++6, libgcc-s1 | Artifact download and checksum, HTTPS, archive extraction, native compatibility |
 | Local credentials | dbus, gnome-keyring, libsecret-1-0, libsecret-tools | Linux Secret Service and credential checks without host services |
 | Workflow additions | Node 22/npm, `@fission-ai/openspec`, python3, bubblewrap, podman | Reference-project workflow tools; Bubblewrap is not claimed as a Google CLI requirement |
 | Repository additions | git, ripgrep, findutils, diffutils, patch, gawk, nano, less, jq | Local Git, searching, editing, and JSON settings |
@@ -454,10 +495,25 @@ agy --container-build --version
 ANTIGRAVITY_CONTAINER_IMAGE=localhost/antigravity-cli:previous agy --version
 ```
 
-An absent image is built automatically. Explicit builds use `--no-cache` to
-recheck the official release rather than reusing an old download layer.
-The build prints CLI and OpenSpec versions and binary architecture. It tracks
-the current official release and does not promise bit-for-bit reproducibility.
+An absent image is built automatically. Explicit builds use `--no-cache`, so
+they download the recorded artifacts again and verify their checksums. The
+build prints CLI and OpenSpec versions and binary architecture. It installs the
+recorded `agy` release, not the latest published one; Debian packages are not
+pinned, so builds are not bit-for-bit reproducible.
+
+### Updating pinned image inputs
+
+1. Read `https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json`
+   and `linux_arm64.json` for the new release.
+2. Record `AGY_VERSION`, both `AGY_URL_*` values and both `AGY_SHA512_*` values,
+   and any new `OPENSPEC_VERSION` or base digest (from
+   `podman image inspect --format '{{.Digest}}'` after pulling
+   `docker.io/library/node:22-bookworm-slim`) in `Containerfile`.
+3. Rebuild with `--container-build` and check `agy --version` and
+   `openspec --version`.
+4. Rerun the credential-free suites and `bash tests/run-runtime.sh`, including
+   the keyring checks, and verify account login manually.
+5. Record the tested versions and results with the date in `docs/validation.md`.
 State persists across image updates; back it up separately if you need to
 restore application data as well as the executable.
 
@@ -468,6 +524,7 @@ container:
 
 ```bash
 python3 -m unittest discover -s tests -p test_wrapper.py -v
+python3 -m unittest discover -s tests -p test_image_pins.py -v
 ANTIGRAVITY_RUNTIME_TESTS=1 python3 -m unittest discover -s tests -p test_runtime.py -v
 # On filesystems without Unix permissions, or without host Python:
 bash tests/run-runtime.sh
@@ -475,7 +532,10 @@ bash tests/run-runtime.sh
 
 The second command uses real rootless Podman and temporary directories under
 `.test-state/`, exercising image checks, mount boundaries, ownership,
-worktrees, child containers, keyring persistence, and native startup diagnostics.
+worktrees, child containers, keyring persistence under the session hardening,
+zero capabilities and no-new-privileges, effective cgroup v2 budgets and
+process-limit enforcement, the lifetime limit, the refused home workspace, and
+native startup diagnostics.
 It uses only dummy secrets and does not complete Google account authentication
 or submit paid model requests. Manual OAuth and model-request results, the
 known internal sandbox incompatibility, and outstanding architecture/SELinux

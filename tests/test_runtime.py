@@ -92,6 +92,9 @@ class RuntimeTests(unittest.TestCase):
         self.state.chmod(0o700)
         return ['podman', 'run', '--rm', '--interactive', '--tty', '--read-only', '--read-only-tmpfs=false',
                 '--userns=keep-id', '--user', f'{os.getuid()}:{os.getgid()}',
+                # Same session hardening and default budgets as the wrapper.
+                '--cap-drop=all', '--security-opt=no-new-privileges',
+                f'--memory={4 << 30}', '--cpus=2', '--pids-limit=512',
                 '--tmpfs', '/tmp:rw,exec,nosuid,nodev,mode=1777,size=512m',
                 '--tmpfs', '/run:rw,nosuid,nodev,noexec,mode=1777,size=32m',
                 '--tmpfs', '/var/tmp:rw,nosuid,nodev,noexec,mode=1777,size=512m',
@@ -419,6 +422,82 @@ print("process credential audit passed")
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn('Keyring passphrase:', result.stdout + result.stderr)
         self.assertIn('GEMINI_API_KEY', result.stdout + result.stderr)
+
+
+    # Session hardening baseline (B01-B05), ported from claude-container and codex-container.
+    def test_effective_hardening_and_budgets(self):
+        script = """python3 - "$@" <<'CHECK'
+import pathlib, sys
+memory, nano, pids = map(int, sys.argv[1:4])
+status = dict(line.split(':', 1) for line in pathlib.Path('/proc/self/status').read_text().splitlines())
+assert all(int(status[k], 16) == 0 for k in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')), status
+assert int(status['NoNewPrivs']) == 1
+root = pathlib.Path('/sys/fs/cgroup')
+assert pathlib.Path('/proc/self/cgroup').read_text() == '0::/\\n'
+assert int((root / 'memory.max').read_text()) == memory
+assert int((root / 'pids.max').read_text()) == pids
+quota, period = (root / 'cpu.max').read_text().split()
+assert int(quota) * 10**9 == nano * int(period)
+print('EFFECTIVE_HARDENING_OK')
+CHECK
+git --version >/dev/null && openspec --version >/dev/null && agy --version >/dev/null
+"""
+        cases = ((dict(), (4 << 30, 2 * 10**9, 512)),
+                 (dict(ANTIGRAVITY_CONTAINER_MEMORY_LIMIT='1536m', ANTIGRAVITY_CONTAINER_CPU_LIMIT='1.5',
+                       ANTIGRAVITY_CONTAINER_PIDS_LIMIT='256'), (1536 << 20, 1500000000, 256)))
+        for env, expected in cases:
+            for service in ('0', '1'):
+                with self.subTest(env=env, service=service):
+                    arguments = 'set -- ' + ' '.join(map(str, expected)) + '\n'
+                    result = self.shell(arguments + script, ANTIGRAVITY_CONTAINER_PODMAN=service, **env)
+                    self.assert_success(result)
+                    self.assertIn('EFFECTIVE_HARDENING_OK', result.stdout)
+        # A process budget is enforced, not just reported.
+        result = self.shell('python3 - <<\'CHECK\'\nimport subprocess\nchildren = []\ntry:\n'
+                            '    for _ in range(80):\n        children.append(subprocess.Popen(["sleep", "30"]))\n'
+                            'except (BlockingIOError, OSError):\n    print("PIDS_BUDGET_ENFORCED")\n'
+                            'finally:\n    [child.kill() for child in children]\nCHECK\n',
+                            ANTIGRAVITY_CONTAINER_PIDS_LIMIT='32')
+        self.assert_success(result)
+        self.assertIn('PIDS_BUDGET_ENFORCED', result.stdout)
+
+    def test_tools_without_capabilities(self):
+        script = """git init -q repo && git -C repo -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m x
+openspec --version >/dev/null
+bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all true && echo BWRAP_OK
+podman run --rm --pull=never --entrypoint true """ + shlex.quote(IMAGE) + """ && echo DELEGATED_CHILD_OK
+"""
+        result = self.shell(script, ANTIGRAVITY_CONTAINER_PODMAN='1')
+        self.assert_success(result)
+        for marker in ('BWRAP_OK', 'DELEGATED_CHILD_OK'):
+            self.assertIn(marker, result.stdout, result.stderr)
+
+    def session_names(self):
+        listing = subprocess.run(['podman', 'ps', '--all', '--format', '{{.Names}}'],
+                                 capture_output=True, text=True, timeout=30)
+        self.assertEqual(listing.returncode, 0, listing.stderr)
+        prefix = self.project.name.replace(' ', '-') + '-'
+        return [name for name in listing.stdout.splitlines() if name.startswith(prefix)]
+
+    def test_session_lifetime_limit_and_early_exit(self):
+        existing = self.session_names()
+        started = time.monotonic()
+        result = self.shell('sleep 60\n', ANTIGRAVITY_CONTAINER_RUN_TIMEOUT='3')
+        self.assertLess(time.monotonic() - started, 45)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f'session lifetime limit reached (3 s); exit status {result.returncode}', result.stderr)
+        print(f'lifetime expiry status: {result.returncode}')
+        self.assertEqual(self.session_names(), existing)
+        result = self.shell('exit 7\n', ANTIGRAVITY_CONTAINER_RUN_TIMEOUT='30')
+        self.assertEqual(result.returncode, 7)
+        self.assertNotIn('lifetime limit', result.stderr)
+
+    def test_sensitive_workspace_refused_before_engine(self):
+        existing = self.session_names()
+        result = self.shell('true\n', HOME=str(self.project))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('refusing sensitive workspace ' + str(self.project), result.stderr)
+        self.assertEqual(self.session_names(), existing)
 
 
 if __name__ == '__main__':
