@@ -1,4 +1,4 @@
-# container-authentication Specification
+# agent-authentication Specification
 
 ## Purpose
 

@@ -1,4 +1,4 @@
-# agent-permissions Specification
+# container-podman-access Specification
 
 ## Purpose
 
