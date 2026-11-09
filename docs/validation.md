@@ -329,3 +329,14 @@ remote create request was cancelled: unresolved ownership is reported for
 manual inspection and never permits deletion by guessed name. Engine loss,
 SIGKILL, host failure, and uninterruptible kernel tasks can prevent resource
 removal despite bounded userspace cleanup attempts.
+
+## Common specification names: 2026-11-09
+
+The OpenSpec capabilities were renamed to the scheme shared by the five wrappers (Wave 1, `sandbox-ref-2`). Requirements and scenarios are unchanged; only directory names and spec titles changed. Earlier sections and archived changes keep the names that were current at the time.
+
+| Previous name | Current name |
+| --- | --- |
+| `agent-permissions` | `container-podman-access` |
+| `container-authentication` | `agent-authentication` |
+
+`openspec validate --specs` passed: 5 specs, 0 failures.
