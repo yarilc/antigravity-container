@@ -29,10 +29,10 @@ With `--container-git-worktree`, the wrapper SHALL mount the immediate parent of
 - **THEN** the wrapper adds no other mounts and documents the limitation instead of implicitly expanding access
 
 ### Requirement: Dedicated persistent state
-The wrapper SHALL mount a dedicated application home from `ANTIGRAVITY_CONTAINER_STATE_DIR`, defaulting to `${HOME}/.local/share/antigravity-container/home`, at `/antigravity-home`. It SHALL preserve settings, sessions, caches, and the application keyring across runs, creating state with user-only permissions. Before image operations, resolved state SHALL belong to the caller, allow read/write/search access, and deny group/other access. Existing permissions SHALL NOT be recursively rewritten.
+The wrapper SHALL mount the persistent application home at `/antigravity-home`: the dedicated home `${HOME}/.local/share/antigravity-container/home` when `ANTIGRAVITY_CONTAINER_STATE_DIR` is unset, the named private home when it is nonempty, and shared `~/.gemini` state when it is empty. State SHALL keep settings, sessions, caches and account tokens, be caller-owned, accessible and private before image operations, and never be recursively re-permissioned.
 
 #### Scenario: State reused
-- **WHEN** a second session starts with the same state directory
+- **WHEN** a second session starts with the same dedicated or isolated state directory
 - **THEN** it finds previous settings and sessions without mounting the host home or generic host `~/.gemini`
 
 #### Scenario: New state
@@ -43,8 +43,22 @@ The wrapper SHALL mount a dedicated application home from `ANTIGRAVITY_CONTAINER
 - **WHEN** the selected state allows group/other access or has incorrect ownership
 - **THEN** startup fails before image operations with actionable guidance rather than silently changing existing permissions
 
+#### Scenario: Shared state selected explicitly
+- **WHEN** `ANTIGRAVITY_CONTAINER_STATE_DIR` is set to an empty value
+- **THEN** only the host `~/.gemini`, or `ANTIGRAVITY_CONTAINER_CONFIG_DIR` when set, is mounted at `/antigravity-home/.gemini`, after the same ownership and privacy checks
+- **AND** the README states that other tools using `~/.gemini`, such as Gemini CLI, then share their files with the container
+
+#### Scenario: Configuration directory override
+- **WHEN** `ANTIGRAVITY_CONTAINER_CONFIG_DIR` names a private absolute directory with shared state
+- **THEN** it replaces `~/.gemini`; a relative value, or a value without shared state (an unset or nonempty `ANTIGRAVITY_CONTAINER_STATE_DIR`), fails before engine queries
+- **AND** every session has `ANTIGRAVITY_CONTAINER_CONFIG_DIR=/antigravity-home/.gemini`, and the host value is never forwarded
+
+#### Scenario: Isolated state overlaps the workspace
+- **WHEN** the selected state directory or configuration directory overlaps the workspace or worktree parent
+- **THEN** the wrapper exits with status 1 naming the variable before any engine query
+
 ### Requirement: Read only system and temporary storage
-The container SHALL use a read-only root filesystem, writable state and workspace, and explicitly provisioned ephemeral tmpfs storage with automatic read-only tmpfs provisioning disabled. It SHALL expose only these mounts and the Podman socket when explicitly enabled.
+The container SHALL use a read-only root filesystem, writable state and workspace, and explicitly provisioned ephemeral tmpfs storage with automatic read-only tmpfs provisioning disabled. It SHALL expose only these mounts, the read-only CA bundle when enabled, the guard and its session inputs in restricted modes, and the Podman socket when explicitly enabled in unrestricted mode.
 
 #### Scenario: System write attempt
 - **WHEN** a process attempts to modify `/usr` and then writes a temporary file
@@ -61,8 +75,8 @@ The container SHALL use a read-only root filesystem, writable state and workspac
 - **THEN** those files are absent from the new session
 
 #### Scenario: Private keyring runtime
-- **WHEN** an account session starts with explicit temporary mounts
-- **THEN** its keyring runtime directory under `/tmp` remains private with mode `0700` and its private bus and keyring remain usable
+- **WHEN** an account session starts in a restricted mode with explicit temporary mounts
+- **THEN** no keyring runtime directory is created, `XDG_RUNTIME_DIR` is the guard's private `/tmp/sandbox-runtime`, and the guard's private-root layout checks accept the mounts
 
 ### Requirement: Scoped state creation permissions
 The wrapper SHALL limit its private state-creation umask to state creation and preserve the inherited wrapper umask for subsequent operations. It SHALL NOT claim that this sets the container process umask. Account keyring runtime privacy SHALL remain enforced independently inside the container.

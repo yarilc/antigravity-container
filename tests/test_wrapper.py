@@ -1,6 +1,7 @@
 """Behavior checks for the wrapper without an engine or Google credentials."""
 import json
 import itertools
+import shutil
 import os
 from pathlib import Path
 import socket
@@ -12,115 +13,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = ROOT / 'antigravity-container.sh'
-FAKE = r'''#!/usr/bin/env python3
-import json, os, pathlib, sys, time, signal
-args = sys.argv[1:]
-log = pathlib.Path(os.environ['FAKE_LOG'])
-with log.open('a') as f:
-    f.write(json.dumps(args) + '\n')
-mask = os.umask(0)
-os.umask(mask)
-with pathlib.Path(str(log) + '.context').open('a') as f:
-    f.write(json.dumps({'args': args, 'umask': mask, 'host': os.environ.get('CONTAINER_HOST')}) + '\n')
-def publish_cid():
-    if not os.environ.get('FAKE_MISSING_CID'):
-        pathlib.Path(args[args.index('--cidfile') + 1]).write_text(os.environ.get('FAKE_CID', 'a' * 64) + '\n')
-
-if args[:2] == ['--remote', '--url']:
-    default = os.environ.get('FAKE_SOCKET_ROOTLESS', 'true') + ' ' + args[2][len('unix://'):]
-    print(os.environ.get('FAKE_SOCKET_INFO', default))
-    sys.exit(int(os.environ.get('FAKE_SOCKET_STATUS', '0')))
-elif args[0] == 'info':
-    print(os.environ.get('FAKE_INFO', 'true linux false'))
-    sys.exit(int(os.environ.get('FAKE_INFO_STATUS', '0')))
-elif args[:2] == ['image', 'exists']:
-    sys.exit(int(os.environ.get('FAKE_IMAGE_STATUS', '0')))
-elif args[0] == 'build':
-    sys.exit(int(os.environ.get('FAKE_BUILD_STATUS', '0')))
-elif args[0] == 'ps':
-    print(os.environ.get('FAKE_NAMES', ''))
-elif args[0] == 'create':
-    mode = os.environ.get('FAKE_CREATE_MODE', '')
-    if mode:
-        pathlib.Path(str(log) + '.pid').write_text(str(os.getpid()))
-        if mode in ('before', 'stall-owned'):
-            publish_cid()
-        if mode == 'cid-on-term':
-            def cancel(sig, frame):
-                publish_cid()
-                sys.exit(125)
-            signal.signal(signal.SIGTERM, cancel)
-        elif os.environ.get('FAKE_CLIENT_IGNORE_TERM'):
-            signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        pathlib.Path(str(log) + '.creating').touch()
-        release = pathlib.Path(str(log) + '.release')
-        while not release.exists():
-            time.sleep(0.01)
-        if mode not in ('before', 'stall-owned'):
-            publish_cid()
-        sys.exit(0)
-    if os.environ.get('FAKE_CREATE_WAIT'):
-        pathlib.Path(str(log) + '.creating').touch()
-        release = pathlib.Path(str(log) + '.release')
-        deadline = time.monotonic() + 8
-        while not release.exists() and time.monotonic() < deadline:
-            time.sleep(0.01)
-        sys.exit(125)
-    if os.environ.get('FAKE_ALL_COLLISIONS'):
-        sys.exit(125)
-    collision = pathlib.Path(str(log) + '.collision')
-    if os.environ.get('FAKE_COLLISION') and not collision.exists():
-        collision.touch()
-        sys.exit(125)
-    if os.environ.get('FAKE_CREATE_FAILURE'):
-        print('create failed', file=sys.stderr)
-        sys.exit(125)
-    publish_cid()
-    print(os.environ.get('FAKE_STDOUT_CID', 'a' * 64))
-elif args[:2] == ['container', 'exists']:
-    default = '0' if os.environ.get('FAKE_COLLISION') or os.environ.get('FAKE_ALL_COLLISIONS') else '1'
-    sys.exit(int(os.environ.get('FAKE_EXISTS_STATUS', default)))
-elif args[0] == 'inspect':
-    if 'FAKE_AGENT_BUDGETS' in os.environ:
-        print(os.environ['FAKE_AGENT_BUDGETS'])
-    else:
-        calls = [json.loads(line) for line in log.read_text().splitlines()]
-        create = [c for c in calls if c[0] == 'create'][-1]
-        value = lambda prefix: next(a[len(prefix):] for a in create if a.startswith(prefix))
-        whole, _, frac = value('--cpus=').partition('.')
-        nano = int(whole) * 10**9 + int((frac + '000')[:3]) * 10**6
-        print(value('--memory='), nano, value('--pids-limit='))
-    sys.exit(int(os.environ.get('FAKE_INSPECT_STATUS', '0')))
-elif args[0] in ('kill', 'rm'):
-    if os.environ.get('FAKE_CONTROL_STALL') in (args[0], 'both'):
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        time.sleep(60)
-    status = int(os.environ.get('FAKE_' + args[0].upper() + '_STATUS', '0'))
-    if status:
-        sys.exit(status)
-    pid = pathlib.Path(str(log) + '.pid')
-    if pid.exists() and (args[0] == 'rm' or not os.environ.get('FAKE_IGNORE_SIGNAL')):
-        sig = signal.SIGKILL if args[0] == 'rm' else getattr(signal, 'SIG' + args[args.index('--signal')+1])
-        try:
-            os.kill(int(pid.read_text()), sig)
-        except ProcessLookupError:
-            pass
-elif args[0] == 'start':
-    if os.environ.get('FAKE_WAIT'):
-        def stop(sig, frame):
-            sys.exit(128 + sig)
-        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-            signal.signal(sig, stop)
-        if os.environ.get('FAKE_CLIENT_IGNORE_TERM'):
-            signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        pathlib.Path(str(log) + '.pid').write_text(str(os.getpid()))
-        pathlib.Path(str(log) + '.started').touch()
-        while True:
-            time.sleep(0.05)
-    if not os.environ.get('FAKE_NO_STDIN'):
-        print('stdin:' + sys.stdin.read())
-    sys.exit(int(os.environ.get('FAKE_EXIT', '0')))
-'''
+FAKE = (Path(__file__).resolve().parent / 'fake_podman.py').read_text()
 
 
 class WrapperTests(unittest.TestCase):
@@ -145,7 +38,8 @@ class WrapperTests(unittest.TestCase):
                 self.env.pop(key)
         self.env.update(PATH=str(self.bin) + ':' + self.env['PATH'],
                         FAKE_LOG=str(self.log), TMPDIR=str(self.diagnostics),
-                        ANTIGRAVITY_CONTAINER_STATE_DIR=str(self.state))
+                        ANTIGRAVITY_CONTAINER_STATE_DIR=str(self.state),
+                        ANTIGRAVITY_CONTAINER_NETWORK='unrestricted')
         self.socket = socket.socket(socket.AF_UNIX)
         self.socket_path = self.base / 'podman.sock'
         self.socket.bind(str(self.socket_path))
@@ -153,7 +47,7 @@ class WrapperTests(unittest.TestCase):
         self.env['ANTIGRAVITY_CONTAINER_PODMAN_SOCKET'] = str(self.socket_path)
 
     def run_wrapper(self, *args, cwd=None, mask=None, **env):
-        return subprocess.run([str(WRAPPER), *args], cwd=cwd or self.project,
+        return subprocess.run([str(getattr(self, 'wrapper', WRAPPER)), *args], cwd=cwd or self.project,
                               env=self.env | env, input='input payload',
                               text=True, capture_output=True, timeout=10,
                               **({'umask': mask} if mask is not None else {}))
@@ -375,7 +269,8 @@ class WrapperTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 create = self.create()
                 self.assertEqual(any(c[0] == '--remote' for c in self.calls()), value == '1')
-                self.assertEqual('--unsetenv' in create, value != '1')
+                self.assertEqual(any(create[i:i + 2] == ['--unsetenv', 'CONTAINER_HOST'] for i in range(len(create))),
+                                 value != '1')
                 self.assertEqual('CONTAINER_HOST=unix:///run/podman/podman.sock' in create, value == '1')
                 self.assertEqual('--dangerously-skip-permissions' in create, yolo == '1' and not shell)
 
@@ -476,16 +371,29 @@ class WrapperTests(unittest.TestCase):
                                               FAKE_INFO='true linux true').returncode, 0)
 
     def test_build_location_refresh_and_missing_image(self):
-        self.assertEqual(self.run_wrapper('--container-build').returncode, 0)
+        self.assertEqual(self.run_wrapper('--container-build', ANTIGRAVITY_CONTAINER_MAINTENANCE='1').returncode, 0)
         build = next(c for c in self.calls() if c[0] == 'build')
         self.assertIn('--no-cache', build)
         self.assertEqual(build[-3:], ['--file', str(ROOT / 'Containerfile'), str(ROOT)])
         self.log.unlink()
-        self.assertEqual(self.run_wrapper(FAKE_IMAGE_STATUS='1').returncode, 0)
-        self.assertTrue(any(c[0] == 'build' for c in self.calls()))
+        self.assertEqual(self.run_wrapper(FAKE_IMAGE_STATUS='1', ANTIGRAVITY_CONTAINER_MAINTENANCE='1').returncode, 0)
+        build = next(c for c in self.calls() if c[0] == 'build')
+        self.assertNotIn('--no-cache', build)
+
+    def test_every_build_requires_exact_maintenance(self):
+        for options, env in ((('--container-build',), {}), ((), {'FAKE_IMAGE_STATUS': '1'})):
+            for value in (None, '', '0', 'true', ' 1'):
+                with self.subTest(options=options, value=value):
+                    self.log.unlink(missing_ok=True)
+                    extra = {} if value is None else {'ANTIGRAVITY_CONTAINER_MAINTENANCE': value}
+                    result = self.run_wrapper(*options, **env, **extra)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn('ANTIGRAVITY_CONTAINER_MAINTENANCE=1', result.stderr)
+                    self.assertFalse([c for c in self.calls() if c[0] in ('build', 'create', 'pull')])
 
     def test_build_and_image_inspection_errors(self):
-        self.assertEqual(self.run_wrapper('--container-build', FAKE_BUILD_STATUS='17').returncode, 17)
+        self.assertEqual(self.run_wrapper('--container-build', FAKE_BUILD_STATUS='17',
+                                          ANTIGRAVITY_CONTAINER_MAINTENANCE='1').returncode, 17)
         self.assertNotEqual(self.run_wrapper(FAKE_IMAGE_STATUS='125').returncode, 0)
         self.assertEqual(self.state.stat().st_mode & 0o777, 0o700)
 
@@ -899,6 +807,359 @@ class WrapperTests(unittest.TestCase):
             self.assertIn(text, result.stdout)
         self.assertEqual(self.calls(), [])
 
+
+    # Network modes (add-network-egress), adapted from the Pi port.
+    def restricted_fixture(self):
+        install = self.base / 'install'
+        (install / 'network/bin').mkdir(parents=True)
+        self.wrapper = install / 'antigravity-container.sh'
+        shutil.copyfile(WRAPPER, self.wrapper)
+        self.wrapper.chmod(0o755)
+        for name in ('Containerfile', '.containerignore', 'container-entrypoint.sh', 'network/relay.py', 'network/mux.py'):
+            (install / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / name, install / name)
+        guard = install / 'network/bin/sandbox-egress-guard'
+        guard.write_text('#!/bin/sh\nexit 0\n')
+        guard.chmod(0o700)
+        (guard.parent / 'sandbox-egress-guard.sha256').write_text('c' * 64 + '  sandbox-egress-guard\n')
+        for name in ('network/session.py', 'network/agent_profile.py', 'network/policy.py', 'network/revisions.py',
+                     'network/platform_check.py', 'network/proxy_hardening.py', 'agent/profile.json'):
+            (install / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / name, install / name)
+        record = ("import json,os,pathlib,sys\n"
+                  "pathlib.Path(os.environ['FAKE_LOG']).open('a').write(json.dumps([pathlib.Path(sys.argv[0]).name,"
+                  " *sys.argv[1:], os.environ.get('ANTIGRAVITY_CONTAINER_IMAGE', ''),"
+                  " os.environ.get('ANTIGRAVITY_CONTAINER_STATE_DIR', '<unset>')]) + '\\n')\n")
+        (install / 'network/qualify.py').write_text(record + (
+            "if os.environ.get('FAKE_QUALIFY_STALL'):\n"
+            " import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            " pathlib.Path(os.environ['FAKE_LOG'] + '.stalled-qualify').touch()\n"
+            " time.sleep(60)\n"
+            "sys.exit(int(os.environ.get('FAKE_QUALIFY_STATUS', '0')))\n"))
+        (install / 'network/control.py').write_text(record + (
+            "sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))\n"
+            "import socket\nfrom revisions import TLS_ENFORCEMENT\nargs=sys.argv[1:]\n"
+            "if args[0]=='preflight' and os.environ.get('FAKE_PREFLIGHT_FAILURE'):\n"
+            " print('antigravity-container: network policy preflight failed: synthetic invalid policy', file=sys.stderr); sys.exit(1)\n"
+            "if args[0]=='snapshot':\n"
+            " p=pathlib.Path(args[args.index('--session')+1]); (p/'transport').mkdir(); (p/'config').mkdir(); (p/'logs').mkdir()\n"
+            " s=socket.socket(socket.AF_UNIX); s.bind(str(p/'transport/proxy.sock')); s.close()\n"
+            " (p/'transport/ready').write_text('fixture-policy guard='+'c'*64+' mux=1 tls='+TLS_ENFORCEMENT+'\\n')\n"
+            " print('fixture-policy')\n"))
+        runtime = self.base / 'runtime'
+        runtime.mkdir(mode=0o700, exist_ok=True)
+        return dict(FAKE_INFO='true linux true', CONTAINER_HOST='unix:///run/service.sock',
+                    ANTIGRAVITY_CONTAINER_NETWORK_POLICY=str(install / 'policy.json'),
+                    ANTIGRAVITY_CONTAINER_NETWORK_PROFILE='gemini-api',
+                    ANTIGRAVITY_CONTAINER_NETWORK_RUNTIME_DIR=str(runtime),
+                    ANTIGRAVITY_CONTAINER_EGRESS_IMAGE='e' * 64, FAKE_EGRESS_IMAGE='e' * 64)
+
+    def names(self):
+        return [Path(c[0]).name if c[0].endswith('.py') else c[0] for c in self.calls()]
+
+    def creates(self):
+        return [c for c in self.calls() if c[0] == 'create']
+
+    @staticmethod
+    def env_values(create):
+        return [create[i + 1] for i, a in enumerate(create[:-1]) if a == '--env']
+
+    def wait_path(self, path, process, timeout=5):
+        deadline = time.monotonic() + timeout
+        while not path.exists():
+            self.assertIsNone(process.poll(), 'wrapper exited before fixture barrier')
+            self.assertLess(time.monotonic(), deadline, 'fixture barrier timed out')
+            time.sleep(0.01)
+
+    def test_missing_mode_stops_before_engine(self):
+        for mode in (None, ''):
+            env = self.env | {'ANTIGRAVITY_CONTAINER_PODMAN': '1', 'CONTAINER_HOST': 'invalid', 'PATH': ''}
+            env.pop('ANTIGRAVITY_CONTAINER_NETWORK')
+            if mode is not None:
+                env['ANTIGRAVITY_CONTAINER_NETWORK'] = mode
+            for flags, extra in (((), {}), (('--container-shell', '--container-build', '--container-git-worktree'), {}),
+                                 ((), {'ANTIGRAVITY_YOLO': '1'})):
+                with self.subTest(mode=mode, flags=flags, extra=extra):
+                    result = subprocess.run(['/bin/bash', str(WRAPPER), *flags, '-p', 'x'], cwd=self.project,
+                                            env=env | extra, text=True, capture_output=True, timeout=10)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn('ANTIGRAVITY_CONTAINER_NETWORK is required', result.stderr)
+                    self.assertIn('offline, provider, or unrestricted', result.stderr)
+                    self.assertIn('unrestricted keeps the previous networking behavior', result.stderr)
+                    self.assertFalse(self.log.exists())
+                    self.assertFalse(self.state.exists())
+
+    def test_mode_state_and_delegation_rejections_precede_engine(self):
+        cases = (({'ANTIGRAVITY_CONTAINER_NETWORK': 'invalid'}, 'must be offline, provider, or unrestricted'),
+                 ({'ANTIGRAVITY_CONTAINER_NETWORK': 'host'}, 'must be offline, provider, or unrestricted'),
+                 ({'ANTIGRAVITY_CONTAINER_NETWORK': 'provider'}, 'requires ANTIGRAVITY_CONTAINER_NETWORK_PROFILE'),
+                 ({'ANTIGRAVITY_CONTAINER_NETWORK': 'offline', 'ANTIGRAVITY_CONTAINER_PODMAN': '1'},
+                  'rejects ANTIGRAVITY_CONTAINER_PODMAN=1'),
+                 ({'ANTIGRAVITY_CONTAINER_NETWORK': 'provider', 'ANTIGRAVITY_CONTAINER_PODMAN': '1',
+                   'ANTIGRAVITY_YOLO': '1'}, 'rejects ANTIGRAVITY_CONTAINER_PODMAN=1'),
+                 ({'ANTIGRAVITY_CONTAINER_STATE_DIR': str(self.base / 'isolated'),
+                   'ANTIGRAVITY_CONTAINER_CONFIG_DIR': str(self.base / 'c')}, 'ANTIGRAVITY_CONTAINER_CONFIG_DIR requires shared state'),
+                 ({'ANTIGRAVITY_CONTAINER_STATE_DIR': '', 'ANTIGRAVITY_CONTAINER_CONFIG_DIR': 'relative'},
+                  'ANTIGRAVITY_CONTAINER_CONFIG_DIR must be an absolute path'),
+                 ({'ANTIGRAVITY_CONTAINER_STATE_DIR': 'relative'}, 'ANTIGRAVITY_CONTAINER_STATE_DIR must be an absolute path'),
+                 ({'ANTIGRAVITY_CONTAINER_STATE_DIR': str(self.project / 'state')},
+                  'ANTIGRAVITY_CONTAINER_STATE_DIR must not overlap the workspace'),
+                 ({'ANTIGRAVITY_CONTAINER_STATE_DIR': '', 'ANTIGRAVITY_CONTAINER_CONFIG_DIR': str(self.project.parent)},
+                  'ANTIGRAVITY_CONTAINER_CONFIG_DIR must not overlap the workspace'),
+                 ({'ANTIGRAVITY_CONTAINER_TRUST_HOST_CA': 'maybe'},
+                  'ANTIGRAVITY_CONTAINER_TRUST_HOST_CA must be 0, 1, true, false, yes, or no'))
+        for values, message in cases:
+            for flags in ((), ('--container-shell',)):
+                with self.subTest(values=values, flags=flags):
+                    self.log.unlink(missing_ok=True)
+                    result = self.run_wrapper(*flags, **values)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn(message, result.stderr)
+                    self.assertEqual(self.calls(), [])
+                    self.assertFalse((self.base / 'isolated').exists())
+        fixture = self.restricted_fixture()
+        for values in ({'FAKE_BACKEND': 'cni'}, {'FAKE_SERVER_VERSION': '4.8.0'}):
+            with self.subTest(values=values):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(**(fixture | values | {'ANTIGRAVITY_CONTAINER_NETWORK': 'offline'}))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('ineligible restricted platform', result.stderr)
+                self.assertFalse(any(c[0] in ('build', 'create') for c in self.calls()))
+
+    def test_help_documents_modes_migration_and_provider_limits(self):
+        result = self.run_wrapper('--container-help', ANTIGRAVITY_CONTAINER_NETWORK='')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for text in ('--container-qualify', 'ANTIGRAVITY_CONTAINER_NETWORK ', 'ANTIGRAVITY_CONTAINER_NETWORK_PROFILE',
+                     'ANTIGRAVITY_CONTAINER_NETWORK_POLICY', 'ANTIGRAVITY_CONTAINER_NETWORK_RUNTIME_DIR',
+                     'ANTIGRAVITY_CONTAINER_EGRESS_IMAGE', 'ANTIGRAVITY_CONTAINER_MAINTENANCE',
+                     'ANTIGRAVITY_CONTAINER_CONFIG_DIR', 'ANTIGRAVITY_CONTAINER_TRUST_HOST_CA',
+                     'ANTIGRAVITY_CONTAINER_CA_BUNDLE', 'no D-Bus session or keyring',
+                     'google-account: oauth2.googleapis.com', 'gemini-api: generativelanguage.googleapis.com',
+                     'Only offline removes this', 'outside this boundary', 'sign in again once'):
+            self.assertIn(text, result.stdout)
+        self.assertEqual(self.calls(), [])
+
+    def test_proxy_image_acquisition_requires_maintenance_and_digest(self):
+        fixture = self.restricted_fixture() | {'ANTIGRAVITY_CONTAINER_NETWORK': 'provider', 'FAKE_EGRESS_STATUS': '1'}
+        digest = 'localhost/antigravity-egress@sha256:' + 'e' * 64
+        for maintenance, image in (('', digest), ('1', 'e' * 64), ('1', 'localhost/antigravity-egress:local')):
+            with self.subTest(maintenance=maintenance, image=image):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(**(fixture | {'ANTIGRAVITY_CONTAINER_MAINTENANCE': maintenance,
+                                                       'ANTIGRAVITY_CONTAINER_EGRESS_IMAGE': image, 'FAKE_EGRESS_IMAGE': image}))
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('proxy image is absent', result.stderr)
+                self.assertFalse(any(c[0] in ('pull', 'create') for c in self.calls()))
+        result = self.run_wrapper(**(fixture | {'ANTIGRAVITY_CONTAINER_MAINTENANCE': '1',
+                                               'ANTIGRAVITY_CONTAINER_EGRESS_IMAGE': digest, 'FAKE_EGRESS_IMAGE': digest}))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(['pull', digest], self.calls())
+        for mode in ('offline', 'provider'):
+            with self.subTest(mode=mode, preflight='invalid policy'):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper('--container-build', **(fixture | {
+                    'ANTIGRAVITY_CONTAINER_NETWORK': mode, 'ANTIGRAVITY_CONTAINER_MAINTENANCE': '1',
+                    'FAKE_PREFLIGHT_FAILURE': '1'}))
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('network policy preflight failed', result.stderr)
+                self.assertFalse(any(c[0] in ('build', 'pull', 'create') for c in self.calls()))
+
+    def mount(self, create, target):
+        return [create[i + 1] for i, a in enumerate(create[:-1])
+                if a in ('--volume', '--tmpfs') and create[i + 1].split(':')[1 if a == '--volume' else 0] == target]
+
+    def test_state_choices_and_configuration_directory(self):
+        home = self.base / 'home'
+        home.mkdir()
+        dedicated = home / '.local/share/antigravity-container/home'
+        env = {'HOME': str(home)}
+        # Unset: today's dedicated home.
+        values = self.env | env
+        values.pop('ANTIGRAVITY_CONTAINER_STATE_DIR')
+        result = subprocess.run([str(WRAPPER)], cwd=self.project, env=values, input='', text=True,
+                                capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.mount(self.create(), '/antigravity-home'), [f'{dedicated}:/antigravity-home:rw'])
+        self.assertEqual(dedicated.stat().st_mode & 0o777, 0o700)
+        self.assertIn('ANTIGRAVITY_CONTAINER_CONFIG_DIR=/antigravity-home/.gemini', self.env_values(self.create()))
+        # Empty: shared host ~/.gemini below an ephemeral home.
+        for override in (None, self.base / 'gemini-config'):
+            with self.subTest(override=override):
+                self.log.unlink(missing_ok=True)
+                extra = env | {'ANTIGRAVITY_CONTAINER_STATE_DIR': ''}
+                if override:
+                    extra['ANTIGRAVITY_CONTAINER_CONFIG_DIR'] = str(override)
+                result = self.run_wrapper(**extra)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                create = self.create()
+                source = override or home / '.gemini'
+                self.assertEqual(self.mount(create, '/antigravity-home/.gemini'), [f'{source}:/antigravity-home/.gemini:rw'])
+                self.assertEqual(self.mount(create, '/antigravity-home'),
+                                 ['/antigravity-home:rw,nosuid,nodev,mode=1777,size=64m'])
+                self.assertEqual(source.stat().st_mode & 0o777, 0o700)
+                values = self.env_values(create)
+                self.assertIn('ANTIGRAVITY_CONTAINER_CONFIG_DIR=/antigravity-home/.gemini', values)
+                self.assertNotIn('ANTIGRAVITY_CONTAINER_CONFIG_DIR', values)
+        # A missing isolated home is not created when the engine query fails.
+        missing = self.base / 'not-created'
+        self.log.unlink(missing_ok=True)
+        result = self.run_wrapper(ANTIGRAVITY_CONTAINER_STATE_DIR=str(missing), FAKE_INFO_STATUS='19')
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse(missing.exists())
+
+    def test_host_ca_trust(self):
+        bundle = self.base / 'bundle.pem'
+        bundle.write_text('synthetic certificate bundle')
+        for shared in (False, True):
+            for trust in ('', 'no', '1', 'TrUe', 'yes'):
+                with self.subTest(shared=shared, trust=trust):
+                    self.log.unlink(missing_ok=True)
+                    state = {'ANTIGRAVITY_CONTAINER_STATE_DIR': '', 'HOME': str(self.base)} if shared else {}
+                    result = self.run_wrapper(ANTIGRAVITY_CONTAINER_TRUST_HOST_CA=trust,
+                                              ANTIGRAVITY_CONTAINER_CA_BUNDLE=str(bundle), **state)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    create = self.create()
+                    enabled = trust.lower() in ('1', 'true', 'yes')
+                    self.assertEqual(f'{bundle}:/antigravity-home/ca/bundle.pem:ro' in create, enabled)
+                    for variable in ('SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS'):
+                        self.assertEqual(f'{variable}=/antigravity-home/ca/bundle.pem' in create, enabled)
+                    if enabled and not shared:
+                        self.assertEqual((self.state / 'ca').stat().st_mode & 0o777, 0o700)
+        self.log.unlink(missing_ok=True)
+        result = self.run_wrapper(ANTIGRAVITY_CONTAINER_TRUST_HOST_CA='1', ANTIGRAVITY_CONTAINER_CA_BUNDLE='/missing/bundle.pem')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('ANTIGRAVITY_CONTAINER_CA_BUNDLE is not a file', result.stderr)
+        self.assertFalse(any(c[0] in ('build', 'create') for c in self.calls()))
+
+    def test_offline_order_arguments_and_forwarding(self):
+        host = {'GEMINI_API_KEY': 'synthetic', 'HTTPS_PROXY': 'http://host-proxy:3128', 'no_proxy': '*',
+                'SSL_CERT_FILE': '/etc/hosts', 'AGY_CLI_DISABLE_AUTO_UPDATE': 'false',
+                'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/run/user/1000/bus'}
+        fixture = self.restricted_fixture() | {'ANTIGRAVITY_CONTAINER_NETWORK': 'offline'} | host
+        for flags, tail in (((), ['/usr/local/bin/antigravity-entrypoint', '-p', 'hello world']),
+                            (('--container-shell',), ['/bin/bash'])):
+            for yolo in ('0', '1'):
+                with self.subTest(flags=flags, yolo=yolo):
+                    self.log.unlink(missing_ok=True)
+                    result = self.run_wrapper(*flags, '-p', 'hello world', FAKE_EXIT='7', ANTIGRAVITY_YOLO=yolo, **fixture)
+                    self.assertEqual(result.returncode, 7, result.stderr)
+                    self.assertIn('network mode=offline', result.stderr)
+                    order = [n for n in self.names() if n in ('control.py', 'qualify.py', 'ps', 'create', 'start')]
+                    self.assertEqual(order, ['control.py', 'qualify.py', 'ps', 'create', 'start'])
+                    self.assertIn(['qualify.py', 'check', 'd' * 64, str(self.state)], self.calls())
+                    create = self.create()
+                    values = self.env_values(create)
+                    for name in host:
+                        self.assertNotIn(name, values)
+                    self.assertIn('AGY_CLI_DISABLE_AUTO_UPDATE=true', values)
+                    self.assertTrue(any(create[i:i + 2] == ['--unsetenv', 'DBUS_SESSION_BUS_ADDRESS'] for i in range(len(create))))
+                    self.assertIn('--network=none', create)
+                    self.assertEqual(create[create.index('--entrypoint', create.index('--network=none')) + 1],
+                                     '/opt/sandbox-egress/guard')
+                    self.assertNotIn('/bin/bash', create[:create.index('d' * 64)])
+                    expected = list(tail)
+                    if yolo == '1' and not flags:
+                        expected.insert(1, '--dangerously-skip-permissions')
+                    self.assertEqual(create[create.index('d' * 64) + 1:], ['--offline', '--', *expected])
+                    self.assertFalse(any(c[0] in ('build', 'pull') for c in self.calls()))
+
+    def test_provider_order_and_profile_credentials(self):
+        keys = {'GEMINI_API_KEY': 'k3', 'GOOGLE_API_KEY': 'k5', 'HTTPS_PROXY': 'http://host-proxy:3128'}
+        fixture = self.restricted_fixture() | {'ANTIGRAVITY_CONTAINER_NETWORK': 'provider'} | keys
+        relay = ['/usr/bin/python3', '-I', '/opt/sandbox-egress/relay.py']
+        for profile, credential in (('gemini-api', 'GEMINI_API_KEY'), ('google-account', None), ('custom-api', None)):
+            with self.subTest(profile=profile):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper('-p', 'x', **(fixture | {'FAKE_EXIT': '5', 'ANTIGRAVITY_CONTAINER_NETWORK_PROFILE': profile}))
+                self.assertEqual(result.returncode, 5, result.stderr)
+                self.assertIn(f'network profile={profile} policy=fixture-policy', result.stderr)
+                order = [n for n in self.names() if n in ('qualify.py', 'create', 'exec', 'start', 'rm')]
+                self.assertEqual(order, ['qualify.py', 'create', 'start', 'exec', 'create', 'start', 'rm', 'rm'])
+                agent = self.creates()[1]
+                values = self.env_values(agent)
+                self.assertIn('HTTPS_PROXY=http://127.0.0.1:18080', values)
+                self.assertIn('no_proxy=localhost,127.0.0.1,::1', values)
+                for name in keys:
+                    self.assertEqual(name in values, name == credential)
+                self.assertEqual(agent[agent.index('d' * 64) + 1:],
+                                 ['--provider', '--', *relay, '/usr/local/bin/antigravity-entrypoint', '-p', 'x'])
+                self.assertEqual([c[-1] for c in self.calls() if c[0] == 'rm'], ['a' * 64, 'b' * 64])
+
+    def test_unrestricted_keeps_forwarding_without_bus(self):
+        result = self.run_wrapper(GEMINI_API_KEY='k3', DBUS_SESSION_BUS_ADDRESS='unix:path=/run/user/1000/bus')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        create = self.create()
+        values = self.env_values(create)
+        self.assertIn('GEMINI_API_KEY', values)
+        self.assertIn('AGY_CLI_DISABLE_AUTO_UPDATE=true', values)
+        self.assertTrue(any(create[i:i + 2] == ['--unsetenv', 'DBUS_SESSION_BUS_ADDRESS'] for i in range(len(create))))
+        self.assertFalse(any(a.startswith('--network') for a in create))
+        self.assertNotIn('k3', ' '.join(create))
+
+    def test_failed_qualification_and_interrupted_helpers_clean_up(self):
+        for mode in ('offline', 'provider'):
+            with self.subTest(mode=mode):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(FAKE_QUALIFY_STATUS='3', **(self.restricted_fixture() | {'ANTIGRAVITY_CONTAINER_NETWORK': mode}))
+                self.assertEqual(result.returncode, 3, result.stderr)
+                self.assertFalse(any(c[0] == 'create' for c in self.calls()))
+                self.assertEqual(list((self.base / 'runtime').iterdir()), [])
+                shutil.rmtree(self.base / 'install')
+        fixture = self.restricted_fixture() | {'ANTIGRAVITY_CONTAINER_NETWORK': 'provider'}
+        for stall, marker in (('exec', '.stalled-exec'), ('qualify', '.stalled-qualify')):
+            with self.subTest(stall=stall):
+                self.log.unlink(missing_ok=True)
+                values = fixture | ({'FAKE_STALL': 'exec'} if stall == 'exec' else {'FAKE_QUALIFY_STALL': '1'})
+                process = subprocess.Popen(['bash', str(self.wrapper)], cwd=self.project, env=self.env | values,
+                                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                           text=True, start_new_session=True)
+                try:
+                    self.wait_path(Path(str(self.log) + marker), process, timeout=10)
+                    started = time.monotonic()
+                    process.terminate()
+                    stdout, stderr = process.communicate(timeout=25)
+                finally:
+                    if process.poll() is None:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        process.communicate()
+                self.assertEqual(process.returncode, 143, stdout + stderr)
+                self.assertLess(time.monotonic() - started, 21)
+                self.assertEqual([c[-1] for c in self.calls() if c[0] == 'rm'], ['b' * 64] if stall == 'exec' else [])
+                self.assertEqual(list((self.base / 'runtime').iterdir()), [])
+
+    def test_qualification_entry_points(self):
+        for args in (('--container-qualify', '--container-shell'), ('-p', 'x', '--container-qualify')):
+            result = self.run_wrapper(*args)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('--container-qualify must be used alone', result.stderr)
+            self.assertEqual(self.calls(), [])
+        fixture = self.restricted_fixture()
+        result = self.run_wrapper('--container-qualify', **fixture)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([c[:2] for c in self.calls()], [['qualify.py', 'qualify']])
+        self.assertEqual(self.calls()[0][-1], str(self.state))
+        # An unset state variable qualifies the dedicated home, as launches bind it.
+        self.log.unlink()
+        values = self.env | fixture | {'HOME': str(self.base)}
+        values.pop('ANTIGRAVITY_CONTAINER_STATE_DIR')
+        result = subprocess.run([str(self.wrapper), '--container-qualify'], cwd=self.project, env=values,
+                                text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls()[0][-1], str(self.base / '.local/share/antigravity-container/home'))
+        result = self.run_wrapper('--container-qualify-probe', '-p', 'x', **fixture)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('fixed qualification probe must be used alone', result.stderr)
+        result = self.run_wrapper('--container-qualify-probe', **fixture)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('qualification probes require restricted networking', result.stderr)
+
+    def test_restricted_credentials_match_the_agent_profile(self):
+        profile = json.loads((ROOT / 'agent/profile.json').read_text())
+        text = WRAPPER.read_text()
+        for item in profile['auth'].values():
+            if 'credential_env' in item:
+                self.assertIn(f"\"$ANTIGRAVITY_CONTAINER_NETWORK_PROFILE\" != {item['policy_profile']} ]] "
+                              f"|| profile_credential={item['credential_env']}", text)
 
 if __name__ == '__main__':
     unittest.main()

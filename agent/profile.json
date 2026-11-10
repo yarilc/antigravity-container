@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "name": "antigravity-container",
+  "display_name": "Antigravity",
+  "wrapper": "antigravity-container.sh",
+  "env_prefix": "ANTIGRAVITY_CONTAINER",
+  "label_namespace": "io.antigravity-container",
+  "identifiers": ["antigravity", "agy", "gemini"],
+  "images": {
+    "agent": "localhost/antigravity-cli",
+    "proxy": "localhost/antigravity-egress",
+    "toolchain": "localhost/antigravity-guard-toolchain"
+  },
+  "install": {
+    "state_name": "antigravity-egress",
+    "files": ["container-entrypoint.sh"]
+  },
+  "native": {
+    "home": "/antigravity-home",
+    "command": "agy",
+    "config_dir_env": "ANTIGRAVITY_CONTAINER_CONFIG_DIR",
+    "approval_bypass_env": "ANTIGRAVITY_YOLO",
+    "config_home": ".gemini",
+    "shared_dirs": []
+  },
+  "auth": {
+    "account": {
+      "description": "reuses Google account sign-in with the remote URL and code flow",
+      "policy_profile": "google-account",
+      "hosts": ["oauth2.googleapis.com", "cloudcode-pa.googleapis.com"]
+    },
+    "gemini": {
+      "description": "uses a Gemini API key supplied at launch",
+      "policy_profile": "gemini-api",
+      "hosts": ["generativelanguage.googleapis.com"],
+      "credential_env": "GEMINI_API_KEY"
+    }
+  }
+}

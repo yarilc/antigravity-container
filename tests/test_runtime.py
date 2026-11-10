@@ -21,7 +21,7 @@ ENABLED = os.environ.get('ANTIGRAVITY_RUNTIME_TESTS') == '1'
 
 
 def terminal_run(command, answers, timeout=40):
-    """Feed only dummy keyring passwords through a terminal, not argv/env."""
+    """Drive a command through a terminal, answering prompts with dummy input."""
     master, slave = pty.openpty()
     proc = subprocess.Popen(command, stdin=slave, stdout=slave, stderr=slave)
     os.close(slave)
@@ -77,7 +77,8 @@ class RuntimeTests(unittest.TestCase):
         for key in list(self.env):
             if key.startswith('ANTIGRAVITY_') or key == 'GEMINI_API_KEY':
                 self.env.pop(key)
-        self.env.update(ANTIGRAVITY_CONTAINER_IMAGE=IMAGE, ANTIGRAVITY_CONTAINER_STATE_DIR=str(self.state))
+        self.env.update(ANTIGRAVITY_CONTAINER_IMAGE=IMAGE, ANTIGRAVITY_CONTAINER_STATE_DIR=str(self.state),
+                        ANTIGRAVITY_CONTAINER_NETWORK='unrestricted')
 
     def shell(self, script, *options, **env):
         return subprocess.run([str(WRAPPER), '--container-shell', *options], cwd=self.project,
@@ -87,47 +88,32 @@ class RuntimeTests(unittest.TestCase):
     def assert_success(self, result):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def keyring_command(self, script):
-        self.state.mkdir(exist_ok=True)
-        self.state.chmod(0o700)
-        return ['podman', 'run', '--rm', '--interactive', '--tty', '--read-only', '--read-only-tmpfs=false',
-                '--userns=keep-id', '--user', f'{os.getuid()}:{os.getgid()}',
-                # Same session hardening and default budgets as the wrapper.
-                '--cap-drop=all', '--security-opt=no-new-privileges',
-                f'--memory={4 << 30}', '--cpus=2', '--pids-limit=512',
-                '--tmpfs', '/tmp:rw,exec,nosuid,nodev,mode=1777,size=512m',
-                '--tmpfs', '/run:rw,nosuid,nodev,noexec,mode=1777,size=32m',
-                '--tmpfs', '/var/tmp:rw,nosuid,nodev,noexec,mode=1777,size=512m',
-                '--volume', f'{self.state}:/antigravity-home:rw',
-                '--entrypoint', '/usr/local/lib/antigravity/keyring-session.sh',
-                IMAGE, '/bin/bash', '-ec', script]
-
-    def test_build_context_allows_only_required_root_inputs(self):
+    def test_build_context_allows_only_required_inputs(self):
         context = self.base / 'build-context'
-        context.mkdir()
-        for name in ('.containerignore', 'container-entrypoint.sh', 'keyring-session.sh'):
+        (context / 'network').mkdir(parents=True)
+        for name in ('.containerignore', 'container-entrypoint.sh', 'network/relay.py', 'network/mux.py'):
             shutil.copyfile(ROOT / name, context / name)
         for name in ('unknown-file', '.env', '.gemini/settings.json', '.local/share/keyrings/token',
                      '.git/config', 'custom-private-state/credentials', '.test-state/token',
-                     'nested/Containerfile', 'nested/container-entrypoint.sh',
-                     'nested/keyring-session.sh', 'nested/.containerignore', 'docs/readme'):
+                     'keyring-session.sh', 'network/guard.c', 'network/bin/sandbox-egress-guard',
+                     'nested/Containerfile', 'nested/container-entrypoint.sh', 'nested/relay.py',
+                     'nested/network/mux.py', 'nested/.containerignore', 'docs/readme'):
             p = context / name
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text('DUMMY-NOT-A-CREDENTIAL')
         (context / 'Containerfile').write_text(
             'FROM ' + IMAGE + '\n'
             'COPY container-entrypoint.sh /usr/local/bin/antigravity-entrypoint\n'
-            'COPY keyring-session.sh /usr/local/lib/antigravity/keyring-session.sh\n'
-            'RUN chmod 755 /usr/local/bin/antigravity-entrypoint /usr/local/lib/antigravity/keyring-session.sh\n'
+            'COPY network/relay.py network/mux.py /antigravity-egress-probe/\n'
             'COPY . /antigravity-build-context/\n'
             'RUN test -x /usr/local/bin/antigravity-entrypoint && '
-            'test -x /usr/local/lib/antigravity/keyring-session.sh && '
             'cmp /usr/local/bin/antigravity-entrypoint /antigravity-build-context/container-entrypoint.sh && '
-            'cmp /usr/local/lib/antigravity/keyring-session.sh /antigravity-build-context/keyring-session.sh && '
+            'cmp /antigravity-egress-probe/relay.py /antigravity-build-context/network/relay.py && '
             'python3 -c ' + shlex.quote(
-                "from pathlib import Path; assert {str(p.relative_to('/antigravity-build-context')) "
-                "for p in Path('/antigravity-build-context').rglob('*')} == "
-                "{'Containerfile', '.containerignore', 'container-entrypoint.sh', 'keyring-session.sh'}") + '\n')
+                "from pathlib import Path; found = {str(p.relative_to('/antigravity-build-context')) "
+                "for p in Path('/antigravity-build-context').rglob('*') if p.is_file()}; "
+                "assert found == {'Containerfile', '.containerignore', 'container-entrypoint.sh', "
+                "'network/relay.py', 'network/mux.py'}, found") + '\n')
         iid = self.base / 'fixture-image-id'
         try:
             result = subprocess.run(['podman', 'build', '--no-cache', '--iidfile', str(iid),
@@ -300,10 +286,6 @@ p.write_text('probe')
 mode = p.stat().st_mode & 0o777
 assert mode == (0o666 & ~mask), (mode, mask)
 print('observed-mask', oct(mask), 'file-mode', oct(mode))
-if os.environ.get('EXPECT_PRIVATE'):
-    assert mask == 0o077 and mode == 0o600
-    runtime = Path(os.environ['XDG_RUNTIME_DIR'])
-    assert runtime.stat().st_mode & 0o777 == 0o700
 ''')
         shell = self.shell('python3 "$HOME/mode-probe.py"\n')
         self.assert_success(shell)
@@ -316,14 +298,7 @@ exec /usr/local/bin/antigravity-entrypoint -p probe --settings '{"modelProvider"
 ''')
         self.assert_success(api)
         self.assertIn('observed-mask', api.stdout)
-        code, output = terminal_run(self.keyring_command(
-            'EXPECT_PRIVATE=1 python3 "$HOME/mode-probe.py"'),
-            [('Keyring passphrase:', 'mode-test-only'),
-             ('Confirm new keyring passphrase:', 'mode-test-only')])
-        self.assertEqual(code, 0, output)
-        self.assertIn('observed-mask 0o77 file-mode 0o600', output)
-        print('Runtime mode probes:', shell.stdout.strip(), api.stdout.strip(),
-              'account mask=077 mode=600 runtime=700')
+        print('Runtime mode probes:', shell.stdout.strip(), api.stdout.strip())
 
     def test_exit_code_and_concurrent_sessions(self):
         result = self.shell('exit 23\n')
@@ -338,73 +313,23 @@ exec /usr/local/bin/antigravity-entrypoint -p probe --settings '{"modelProvider"
         first.stdout.close()
         first.stderr.close()
 
-    def test_keyring_persistence_and_wrong_password(self):
-        answers = [('Keyring passphrase:', 'test-only-passphrase'),
-                   ('Confirm new keyring passphrase:', 'test-only-passphrase')]
-        # Reconstruct the dummy passphrase from hex so the check itself never
-        # places its plaintext in the command line it is inspecting.
-        secret_hex = 'test-only-passphrase'.encode().hex()
-        audit = f'''from pathlib import Path
-secret = bytes.fromhex("{secret_hex}")
-checked = 0
-for process in Path("/proc").glob("[0-9]*"):
-    for name in ("environ", "cmdline"):
-        try:
-            data = (process / name).read_bytes()
-        except (PermissionError, FileNotFoundError, ProcessLookupError):
-            continue
-        assert secret not in data, str(process / name)
-        checked += 1
-assert checked > 2
-print("process credential audit passed")
-'''
-        command = self.keyring_command(
-            'python3 -c ' + shlex.quote(audit) +
-            '; printf %s dummy-secret | secret-tool store --label=test application antigravity-test; echo stored')
-        code, output = terminal_run(command, answers)
-        self.assertEqual(code, 0, output)
-        self.assertIn('stored', output)
-        self.assertIn('process credential audit passed', output)
-        self.assertNotIn('test-only-passphrase', output)
-        code, output = terminal_run(self.keyring_command('secret-tool lookup application antigravity-test'), answers[:1])
-        self.assertEqual(code, 0, output)
-        self.assertIn('dummy-secret', output)
-        code, output = terminal_run(self.keyring_command('echo should-not-run'), [('Keyring passphrase:', 'wrong-passphrase')])
-        self.assertNotEqual(code, 0, output)
-        self.assertNotIn('should-not-run', output)
-        self.assertIn('locked', output)
-
-    def test_keyring_no_tty_and_mismatch(self):
-        command = self.keyring_command('true')
-        command.remove('--tty')
-        result = subprocess.run(command, stdin=subprocess.DEVNULL, text=True, capture_output=True, timeout=30)
+    def test_account_session_has_no_bus_and_uses_file_tokens(self):
+        result = self.shell('test -z "${DBUS_SESSION_BUS_ADDRESS:-}"\n'
+                            'for tool in dbus-daemon dbus-run-session gnome-keyring-daemon secret-tool; do\n'
+                            '    if command -v "$tool"; then exit 1; fi\n'
+                            'done\n'
+                            'test "$ANTIGRAVITY_CONTAINER_CONFIG_DIR" = "$HOME/.gemini"\n',
+                            DBUS_SESSION_BUS_ADDRESS='unix:path=/run/user/1000/bus')
+        self.assert_success(result)
+        # Account mode without credentials: agy selects file token storage and
+        # reports that sign-in is needed, without a keyring prompt.
+        result = subprocess.run([str(WRAPPER), '-p', 'test', '--print-timeout', '3s'], cwd=self.project,
+                                env=self.env, stdin=subprocess.DEVNULL, text=True, capture_output=True, timeout=60)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('terminal', result.stderr)
-        code, output = terminal_run(self.keyring_command('echo should-not-run'),
-                                    [('Keyring passphrase:', 'test-only-one'),
-                                     ('Confirm new keyring passphrase:', 'test-only-two')])
-        self.assertNotEqual(code, 0)
-        self.assertIn('do not match', output)
-        self.assertNotIn('should-not-run', output)
-
-    def test_concurrent_account_state_is_locked(self):
-        from concurrent.futures import ThreadPoolExecutor
-        answers = [('Keyring passphrase:', 'test-only-passphrase'),
-                   ('Confirm new keyring passphrase:', 'test-only-passphrase')]
-        command = self.keyring_command('touch "$HOME/session-ready"; sleep 6')
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            first = pool.submit(terminal_run, command, answers)
-            for _ in range(200):
-                if (self.state / 'session-ready').exists():
-                    break
-                time.sleep(0.05)
-            self.assertTrue((self.state / 'session-ready').exists())
-            code, output = terminal_run(self.keyring_command('echo should-not-run'), [])
-            self.assertNotEqual(code, 0, output)
-            self.assertIn('already in use', output)
-            self.assertNotIn('should-not-run', output)
-            code, output = first.result(timeout=30)
-            self.assertEqual(code, 0, output)
+        self.assertNotIn('Keyring passphrase:', result.stdout + result.stderr)
+        logs = '\n'.join(p.read_text(errors='replace')
+                         for p in (self.state / '.gemini/antigravity-cli/log').glob('*.log'))
+        self.assertIn('Using file-based token storage', logs)
 
     def test_native_help_and_api_missing_key_without_tty(self):
         result = subprocess.run([str(WRAPPER), '--version'], cwd=self.project, env=self.env,
