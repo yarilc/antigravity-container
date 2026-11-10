@@ -10,6 +10,8 @@ Usage: antigravity-container.sh [container options] [agy arguments...]
 Run Google Antigravity CLI in a rootless Podman container.
 
 Container options:
+  --container-setup         interactively prepare a complete user installation
+                           and its managed launcher; must be used alone
   --container-qualify       verify a prepared restricted installation with
                            fixed local controls; must be used alone
   --container-build         rebuild the image without cached downloads
@@ -91,12 +93,20 @@ caller's home or a /mnt/<letter> drive root; descendants such as
 /mnt/d/project are allowed. When the lifetime limit stops a session, a notice
 is printed and the engine client's exit status is returned.
 
+New users must first run: bash ./antigravity-container.sh --container-setup
+Then use the managed launch command printed by setup (by default
+~/.local/bin/antigravity-container) from your workspace. An ordinary launch
+with an unset or empty ANTIGRAVITY_CONTAINER_NETWORK stops with setup guidance
+before runtime checks or state creation. Direct operator launches remain
+available with an explicit mode.
+
 There is no D-Bus session or keyring in the container: agy keeps account
 tokens in files in the private state home, protected by Unix permissions only.
 Sign-in uses the remote URL and code flow with a host browser.
 
-Migration: every launch now needs an explicit ANTIGRAVITY_CONTAINER_NETWORK.
-Set ANTIGRAVITY_CONTAINER_NETWORK=unrestricted to keep the previous networking,
+Migration: every direct launch now needs an explicit ANTIGRAVITY_CONTAINER_NETWORK
+(the managed launcher supplies it). Set ANTIGRAVITY_CONTAINER_NETWORK=unrestricted
+to keep the previous networking,
 and add ANTIGRAVITY_CONTAINER_MAINTENANCE=1 to commands that build the image:
   ANTIGRAVITY_CONTAINER_NETWORK=unrestricted ANTIGRAVITY_CONTAINER_MAINTENANCE=1 bash ./antigravity-container.sh --container-build --version
 Accounts signed in through the removed keyring must sign in again once.
@@ -148,6 +158,16 @@ for arg in "$@"; do
     fi
 done
 
+for arg in "$@"; do
+    if [[ "$arg" == --container-setup ]]; then
+        [[ $# == 1 ]] || die '--container-setup must be used alone'
+        [[ -t 0 && -t 1 ]] || die '--container-setup requires an interactive terminal'
+        command -v python3 >/dev/null || die 'host Python 3 is required for interactive setup'
+        setup_script=$(readlink -f -- "${BASH_SOURCE[0]}")
+        exec python3 -I "$(dirname -- "$setup_script")/setup/setup.py"
+    fi
+done
+
 build_image=0
 qualification_probe=0
 shell_mode=0
@@ -166,9 +186,12 @@ for arg in "$@"; do
 done
 
 # An explicit mode precedes every other check, engine query and state operation.
-# add-container-setup replaces this message with guided setup.
-[[ -n "${ANTIGRAVITY_CONTAINER_NETWORK:-}" ]] \
-    || die 'ANTIGRAVITY_CONTAINER_NETWORK is required: set offline, provider, or unrestricted (unrestricted keeps the previous networking behavior)'
+if [[ -z "${ANTIGRAVITY_CONTAINER_NETWORK:-}" ]]; then
+    setup_wrapper=${BASH_SOURCE[0]}
+    [[ "$setup_wrapper" == /* ]] || setup_wrapper="$PWD/$setup_wrapper"
+    printf -v setup_command 'bash %q --container-setup' "$setup_wrapper"
+    die "setup required: run $setup_command; use the managed launcher afterward or explicitly set ANTIGRAVITY_CONTAINER_NETWORK for an operator workflow (offline, provider, or unrestricted; unrestricted keeps the previous networking behavior)"
+fi
 network_mode=$ANTIGRAVITY_CONTAINER_NETWORK
 case "$network_mode" in
     offline|provider|unrestricted) ;;
@@ -358,6 +381,14 @@ validate_private() {
 (umask 077; mkdir -p -- "$state_request") || die "cannot create state directory: $state_request"
 state_dir=$(cd -- "$state_request" && pwd -P) || die "cannot resolve state directory: $state_request"
 validate_private "$state_dir"
+if ((shared_state == 0)); then
+    # The configuration directory always exists in the session, as for the
+    # other wrappers; an existing one created by agy is left unchanged.
+    if [[ ! -e "$state_dir/.gemini" && ! -L "$state_dir/.gemini" ]]; then
+        (umask 077; mkdir -- "$state_dir/.gemini") || die "cannot create state directory: $state_dir/.gemini"
+    fi
+    [[ -d "$state_dir/.gemini" && ! -L "$state_dir/.gemini" ]] || die "configuration directory is not a directory: $state_dir/.gemini"
+fi
 
 ca_bundle=''
 if ((trust_host_ca)); then
@@ -534,6 +565,8 @@ attached=0
 name=''
 qualification_check_pid=''
 session_start_pid=''
+diagnostics_pid=''
+diagnostics_fd=''
 
 # shellcheck disable=SC2329 # Invoked by signal traps.
 record_signal() {
@@ -658,6 +691,17 @@ cleanup() {
         fi
     fi
     reap_client
+    if [[ -n "$diagnostics_fd" ]]; then
+        exec {diagnostics_fd}>&-
+        diagnostics_fd=''
+    fi
+    if [[ -n "$diagnostics_pid" ]]; then
+        # Drain the final client output before reaping the stderr filter.
+        drain_until=$((SECONDS + 1))
+        while child_running "$diagnostics_pid" && ((SECONDS < drain_until)); do sleep 0.01; done
+        reap_helper "$diagnostics_pid" 1
+        diagnostics_pid=''
+    fi
     if [[ "$network_mode" == provider && -n "$session_tmp" ]]; then
         # Owned proxy recovery/removal and diagnostics share the remaining budget.
         "${session_helper[@]}" stop --session "$session_tmp" --deadline "$((shutdown_deadline - SECONDS))" \
@@ -775,8 +819,21 @@ configured_budgets=$(timeout --kill-after=1s 10s podman inspect --type container
 # Explicit stdin redirection prevents Bash replacing stdin with /dev/null.
 attached=1
 started_at=$SECONDS
-podman start --attach --interactive --sig-proxy=false "$container_id" <&0 &
-client_pid=$!
+if [[ -f "$script_dir/setup/diagnostics.py" ]] && command -v python3 >/dev/null; then
+    # Optional for unrestricted installs without host Python. Only the exact
+    # successful Podman 4.3 restart-check line changes level; errors pass.
+    mkfifo -- "$session_tmp/diagnostics.pipe"
+    python3 -I "$script_dir/setup/diagnostics.py" <"$session_tmp/diagnostics.pipe" >&2 &
+    diagnostics_pid=$!
+    exec {diagnostics_fd}>"$session_tmp/diagnostics.pipe"
+    podman start --attach --interactive --sig-proxy=false "$container_id" <&0 2>&"$diagnostics_fd" {diagnostics_fd}>&- &
+    client_pid=$!
+    exec {diagnostics_fd}>&-
+    diagnostics_fd=''
+else
+    podman start --attach --interactive --sig-proxy=false "$container_id" <&0 &
+    client_pid=$!
+fi
 ((pending_status == 0)) || exit "$pending_status"
 status=0
 wait "$client_pid" || status=$?

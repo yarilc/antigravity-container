@@ -456,3 +456,58 @@ Operator-run authenticated checks (Google account sign-in, token reuse and
 refresh, model requests and `/logout` under `google-account`; Gemini API-key
 requests under `gemini-api`) are pending until all Waves are complete. They
 also decide whether `google-account` needs another host.
+
+## Guided setup (`add-container-setup`): 2026-11-10
+
+Target as in the network egress port (WSL2 kernel 6.6.87.2, Landlock ABI 3,
+Podman client 4.3.1 and server 4.9.3, Netavark). Shared files at
+`claude-container` `sandbox-ref-9` (commit `8b191e5`). Images:
+`localhost/antigravity-cli:latest` `8084f5fea2ba…`,
+`localhost/antigravity-egress:local` `13adbfafd7bd…`, toolchain
+`0b69ba43c894…`.
+
+`sandbox-ref-9` was created for this change. `agy` 1.5.3 has no login
+subcommand, so the `account` method declares empty `login_args`, and setup
+offers sign-in inside the interactive `agy` through the installed wrapper.
+Codex, OpenCode and Pi adopted the tag before this copy, with `--shared` and
+`--setup` (Pi also `--setup-runtime`) passing.
+
+Found during apply: the shared smoke check requires a writable
+`ANTIGRAVITY_CONTAINER_CONFIG_DIR`, but a fresh dedicated or isolated home has
+no `.gemini` until `agy` runs. The wrapper now creates a private `.gemini` in
+that home when it is missing, as the other wrappers create their configuration
+directory, and leaves an existing one unchanged.
+
+### Setup transcripts (provider mode, disposable `HOME`, no credentials)
+
+| Run | Observed |
+| --- | --- |
+| `gemini`, no key | Residual exfiltration notice and acknowledgement; maintenance authorization; guard `abi3-seccomp-mux-v1` packaged; `Sandbox qualification: locally-qualified`; `Sandbox: ready`; `Authentication pending. Supply GEMINI_API_KEY`; the managed `--version` launch printed 1.5.3 |
+| `account`, offer declined | `Run Antigravity account sign-in now? It opens Antigravity interactively; exit it when signed in.`; `Next authentication action: <managed command> (sign in inside the interactive session, ...)`; `Authentication: pending` |
+| `account`, offer accepted | The installed wrapper started `agy` under the guard in provider mode with `google-account` (`network profile=google-account`); the TUI showed the sign-in menu and was quit with two Ctrl+C without signing in; setup reported `verified (Antigravity account interactive sign-in session exited successfully; no model request tested)` |
+| `shared` state | Setup saved an empty state directory and `~/.gemini`; the managed shell saw `ANTIGRAVITY_CONTAINER_CONFIG_DIR=$HOME/.gemini` and wrote to the host `~/.gemini` (mode `0700`) |
+
+The accepted-offer status reports that the session exited, not a confirmed
+sign-in; real sign-in remains an operator check. A raw PTY driver in the test
+sends Ctrl+C without the trailing newline of the shared `pty_run`, which would
+otherwise select the first menu entry.
+
+### Final verification
+
+| Check | Result |
+| --- | --- |
+| `bash -n`, ShellCheck | Passed, no findings |
+| `--wrapper` | Passed: 63 tests |
+| `--shared` (includes `test_reference_copy.py` and `test_alignment.py`) | Passed: 148 tests, 27 skipped (run by the modes) |
+| `--setup` (shared `test_setup.py`, unchanged) | Passed: 65 tests |
+| `--setup-runtime` | Passed: 5 tests (fresh provider with rerun, offline and failed update; unrestricted and relocation; shared state; Gemini transcript; account sign-in declined and accepted) |
+| `--qualification` | Passed: 18 tests |
+| `--network` | 21 tests: one run had a `test_agent_budgets_are_effective_and_lifetime_cleans_owned_proxy` failure (the lifetime notice missed by the known whole-second `SECONDS` granularity); two reruns of that test passed |
+| default (unrestricted runtime suite) | Passed: 16 tests |
+| `openspec validate add-container-setup --strict`, `git diff --check` | Valid, clean |
+
+The shared setup notice refers to a "Residual exfiltration" section of
+`docs/network-contract.md`; this repository now has it. Codex, OpenCode and Pi
+lack that section (a documentation gap for Wave 4).
+
+Operator-run authenticated checks remain pending until all Waves are complete.

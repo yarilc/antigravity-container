@@ -182,7 +182,7 @@ class WrapperTests(unittest.TestCase):
     def test_private_state_symlink_and_scoped_umask(self):
         for mask in (0o022, 0o002):
             if self.state.exists():
-                self.state.rmdir()
+                shutil.rmtree(self.state)
             Path(str(self.log) + '.context').unlink(missing_ok=True)
             result = self.run_wrapper(mask=mask)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -883,11 +883,53 @@ class WrapperTests(unittest.TestCase):
                     result = subprocess.run(['/bin/bash', str(WRAPPER), *flags, '-p', 'x'], cwd=self.project,
                                             env=env | extra, text=True, capture_output=True, timeout=10)
                     self.assertEqual(result.returncode, 1, result.stderr)
-                    self.assertIn('ANTIGRAVITY_CONTAINER_NETWORK is required', result.stderr)
+                    self.assertIn('setup required: run bash ', result.stderr)
+                    self.assertIn(' --container-setup; use the managed launcher afterward', result.stderr)
+                    self.assertIn('explicitly set ANTIGRAVITY_CONTAINER_NETWORK', result.stderr)
                     self.assertIn('offline, provider, or unrestricted', result.stderr)
                     self.assertIn('unrestricted keeps the previous networking behavior', result.stderr)
                     self.assertFalse(self.log.exists())
                     self.assertFalse(self.state.exists())
+
+    def test_setup_entry_point_is_dedicated_and_help_takes_precedence(self):
+        for args, message in ((('--container-setup',), 'requires an interactive terminal'),
+                              (('--container-setup', '--container-shell'), 'must be used alone'),
+                              (('-p', 'x', '--container-setup'), 'must be used alone')):
+            with self.subTest(args=args):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(*args, ANTIGRAVITY_CONTAINER_NETWORK='')
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('--container-setup ' + message, result.stderr)
+                self.assertEqual(self.calls(), [])
+                self.assertFalse(self.state.exists())
+        for args in (('--container-setup', '--container-help'), ('--container-help', '--container-setup')):
+            result = self.run_wrapper(*args, ANTIGRAVITY_CONTAINER_NETWORK='')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('--container-setup', result.stdout)
+            self.assertIn('New users must first run', result.stdout)
+            self.assertEqual(self.calls(), [])
+
+    def test_client_stderr_passes_through_the_diagnostics_filter(self):
+        restart = 'time="2026-11-09T21:38:10Z" level=error msg="Should restart: false"\n'
+        for status in ('0', '3'):
+            with self.subTest(status=status):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(FAKE_EXIT=status, FAKE_START_STDERR=restart + 'Error: real failure\n')
+                self.assertEqual(result.returncode, int(status), result.stderr)
+                self.assertIn('level=info msg="Should restart: false"', result.stderr)
+                self.assertNotIn('level=error msg="Should restart', result.stderr)
+                self.assertIn('Error: real failure', result.stderr)
+        # Without the shared filter the client stderr is passed unchanged.
+        install = self.base / 'no-filter'
+        install.mkdir()
+        self.wrapper = install / 'antigravity-container.sh'
+        shutil.copyfile(WRAPPER, self.wrapper)
+        self.wrapper.chmod(0o755)
+        for name in ('Containerfile', '.containerignore', 'container-entrypoint.sh'):
+            shutil.copyfile(ROOT / name, install / name)
+        result = self.run_wrapper(FAKE_START_STDERR=restart)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('level=error msg="Should restart: false"', result.stderr)
 
     def test_mode_state_and_delegation_rejections_precede_engine(self):
         cases = (({'ANTIGRAVITY_CONTAINER_NETWORK': 'invalid'}, 'must be offline, provider, or unrestricted'),
@@ -935,7 +977,8 @@ class WrapperTests(unittest.TestCase):
                      'ANTIGRAVITY_CONTAINER_CONFIG_DIR', 'ANTIGRAVITY_CONTAINER_TRUST_HOST_CA',
                      'ANTIGRAVITY_CONTAINER_CA_BUNDLE', 'no D-Bus session or keyring',
                      'google-account: oauth2.googleapis.com', 'gemini-api: generativelanguage.googleapis.com',
-                     'Only offline removes this', 'outside this boundary', 'sign in again once'):
+                     'Only offline removes this', 'outside this boundary', 'sign in again once',
+                     '--container-setup', 'New users must first run'):
             self.assertIn(text, result.stdout)
         self.assertEqual(self.calls(), [])
 
@@ -981,6 +1024,14 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.mount(self.create(), '/antigravity-home'), [f'{dedicated}:/antigravity-home:rw'])
         self.assertEqual(dedicated.stat().st_mode & 0o777, 0o700)
+        self.assertEqual((dedicated / '.gemini').stat().st_mode & 0o777, 0o700)
+        # An existing configuration directory created by agy keeps its mode.
+        (dedicated / '.gemini').chmod(0o755)
+        self.log.unlink(missing_ok=True)
+        result = subprocess.run([str(WRAPPER)], cwd=self.project, env=values, input='', text=True,
+                                capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((dedicated / '.gemini').stat().st_mode & 0o777, 0o755)
         self.assertIn('ANTIGRAVITY_CONTAINER_CONFIG_DIR=/antigravity-home/.gemini', self.env_values(self.create()))
         # Empty: shared host ~/.gemini below an ephemeral home.
         for override in (None, self.base / 'gemini-config'):

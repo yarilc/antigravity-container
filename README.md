@@ -150,6 +150,25 @@ independent of any optional delegation socket override.
 
 ## First run
 
+New users run guided setup once, from a reviewed checkout, in an interactive
+terminal:
+
+```bash
+bash ./antigravity-container.sh --container-setup
+cd /absolute/path/to/your-project
+"$HOME/.local/bin/antigravity-container"
+```
+
+Setup asks for the network mode, the authentication method (`account` or
+`gemini`), state, budgets and optional authority. It prepares the images and the
+guard under maintenance consent, installs a protected release with a managed
+launcher, qualifies restricted modes and runs a credential-free smoke check. For
+`account` it offers to open `agy` for the Google sign-in; for `gemini` it names
+`GEMINI_API_KEY`. See [docs/setup.md](docs/setup.md). An ordinary launch with no
+`ANTIGRAVITY_CONTAINER_NETWORK` stops with `setup required:` guidance.
+
+### Direct operator launches
+
 ```bash
 chmod +x antigravity-container.sh
 export ANTIGRAVITY_CONTAINER_NETWORK=unrestricted
@@ -158,8 +177,8 @@ cd /absolute/path/to/your-project
 /absolute/path/to/antigravity-container/antigravity-container.sh
 ```
 
-Every launch needs an explicit `ANTIGRAVITY_CONTAINER_NETWORK`; without one the
-wrapper stops before any engine call. Every image build, including the build of
+Every direct launch needs an explicit `ANTIGRAVITY_CONTAINER_NETWORK`; without
+one the wrapper stops with setup guidance before any engine call. Every image build, including the build of
 a missing image, needs the exact `ANTIGRAVITY_CONTAINER_MAINTENANCE=1`.
 
 You can replace the native command with an alias:
@@ -172,7 +191,8 @@ agy --container-help
 ```
 
 The wrapper handles only `--container-build`, `--container-shell`,
-`--container-git-worktree`, `--container-qualify`, and `--container-help`. Other arguments retain their
+`--container-git-worktree`, `--container-qualify`, `--container-setup`, and
+`--container-help`. Other arguments retain their
 order, spaces, and empty values when forwarded to `agy`. Shell mode starts
 Bash instead of `agy` and ignores CLI arguments. Help for the wrapper requires
 no engine and creates no state. Non-interactive CLI invocation does not
@@ -623,6 +643,8 @@ bash tests/run-runtime.sh --wrapper        # wrapper behavior with a fake engine
 bash tests/run-runtime.sh --shared         # shared suites and per-agent unit tests
 bash tests/run-runtime.sh --guard          # guard runtime (also --guard-idle)
 bash tests/run-runtime.sh --qualification  # local qualification
+bash tests/run-runtime.sh --setup          # shared setup suite
+bash tests/run-runtime.sh --setup-runtime  # real guided setup acceptance
 bash tests/run-runtime.sh --network        # offline and provider acceptance
 bash tests/run-runtime.sh                  # unrestricted runtime suite
 ```
