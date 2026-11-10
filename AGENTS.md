@@ -10,3 +10,11 @@
 - Sensitive workspace roots (`/`, system directories, `/tmp`, the physical home and `/mnt/<letter>`) are refused unless exactly `ANTIGRAVITY_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1`.
 - Image inputs (base digest, `agy` release artifact and SHA-512 per architecture, OpenSpec version) are pinned in `Containerfile` and change only through the README update procedure.
 - Run `tests/test_wrapper.py` and `tests/test_image_pins.py` without credentials; real-engine checks use `bash tests/run-runtime.sh`.
+
+# Network sandbox
+
+- Every launch needs an explicit `ANTIGRAVITY_CONTAINER_NETWORK` (`offline`, `provider` or `unrestricted`); every image build and proxy pull needs exact `ANTIGRAVITY_CONTAINER_MAINTENANCE=1`. Host Podman delegation is rejected in restricted modes.
+- `agent/profile.json` and `agent/policies/default.json` hold every Antigravity-specific value used by the shared network code (identity, images, state layout, the `google-account` and `gemini-api` profiles). Restricted preparation, proxy lifecycle and restricted container arguments come from `network/session.py` (`prepare`, `start`, `agent-args`, `stop`); never re-implement them in the wrapper.
+- `network/`, `setup/diagnostics.py` and the shared tests (`sandbox_profile.py`, `test_agent_profile.py`, `test_network_policy.py`, `test_mux.py`, `test_tls_client_hello.py`, `test_tls_proxy.py`, `test_platform.py`, `test_qualification.py`, `test_guard.py`, `test_session.py`, `test_network_feasibility.py` and their fixtures) are copied unchanged from `claude-container` at tag `sandbox-ref-8`. Never edit them here, and never add a profile identifier (`antigravity`, `agy`, `gemini`) to them. Fix a defect in `claude-container` first, then copy the files again and update `tests/test_reference_copy.py`.
+- There is no D-Bus session or keyring in the container: `agy` keeps account tokens in files in the private state home. Never add a Unix-socket exception to the guard for a bus or another tool.
+- Run the suites through `bash tests/run-runtime.sh` with `--wrapper`, `--shared`, `--guard`, `--guard-idle`, `--network-feasibility`, `--network-policy`, `--mux`, `--qualification`, `--network` or no option (unrestricted runtime suite). Automated tests never use real credentials; authenticated Google account and Gemini API-key checks are operator-run.

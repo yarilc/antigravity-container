@@ -3,6 +3,7 @@
 Same parsing as the claude-container reference, plus the recorded per-architecture
 agy release artifacts that replace Google's latest-release installer.
 """
+import json
 from pathlib import Path
 import re
 import unittest
@@ -76,12 +77,25 @@ def violations(recipe):
     return found
 
 
+def policy_divergence(recipe, tested_cli):
+    """Empty when the pinned agy version equals the policy's tested CLI version."""
+    pinned = pins(recipe)[1].get('AGY_VERSION', '')
+    tested = tested_cli.split()[0] if tested_cli.split() else ''
+    return '' if pinned == tested else f'Containerfile AGY_VERSION {pinned} differs from policy tested.cli {tested}'
+
+
 class ImagePinTests(unittest.TestCase):
     def setUp(self):
         self.recipe = (ROOT / 'Containerfile').read_text()
 
     def test_shipped_recipe_is_pinned(self):
         self.assertEqual(violations(self.recipe), [])
+
+    def test_agy_version_matches_the_tested_policy_version(self):
+        policy = json.loads((ROOT / 'agent/policies/default.json').read_text())
+        self.assertEqual(policy_divergence(self.recipe, policy['tested']['cli']), '')
+        self.assertIn('9.9.9', policy_divergence(self.recipe.replace(
+            'ARG AGY_VERSION=' + pins(self.recipe)[1]['AGY_VERSION'], 'ARG AGY_VERSION=9.9.9'), policy['tested']['cli']))
 
     def test_mutated_recipes_are_rejected(self):
         _, args, _ = pins(self.recipe)

@@ -3,10 +3,14 @@
 set -Eeuo pipefail
 [[ $(id -u) != 0 ]]
 for tool in agy openspec bash git python3 bwrap podman rg nano curl jq \
-    dbus-run-session gnome-keyring-daemon secret-tool tar gzip bzip2 zip unzip \
+    openssl tar gzip bzip2 zip unzip \
     file ps find patch diff awk xz sed grep less sha512sum; do
     command -v "$tool" >/dev/null
 done
+for absent in dbus-daemon dbus-run-session gnome-keyring-daemon secret-tool; do
+    if command -v "$absent" >/dev/null; then printf 'unexpected tool: %s\n' "$absent" >&2; exit 1; fi
+done
+[[ -f /opt/sandbox-egress/relay.py && -f /opt/sandbox-egress/mux.py && ! -e /opt/sandbox-egress/guard ]]
 agy --version
 agy --help >/dev/null
 openspec --version

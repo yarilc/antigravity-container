@@ -10,7 +10,10 @@ Usage: antigravity-container.sh [container options] [agy arguments...]
 Run Google Antigravity CLI in a rootless Podman container.
 
 Container options:
+  --container-qualify       verify a prepared restricted installation with
+                           fixed local controls; must be used alone
   --container-build         rebuild the image without cached downloads
+                           (requires ANTIGRAVITY_CONTAINER_MAINTENANCE=1)
   --container-shell         open Bash instead of agy
   --container-git-worktree  mount the physical current directory's immediate
                            parent read/write; keep the original working directory
@@ -25,13 +28,40 @@ can leave residual resources requiring manual inspection. Host coreutils
 provides the required timeout command.
 
 Environment:
+  ANTIGRAVITY_CONTAINER_NETWORK     offline, provider, or unrestricted; required
+                                    for every launch (unrestricted is the
+                                    previous behavior)
+  ANTIGRAVITY_CONTAINER_NETWORK_PROFILE  provider profile: google-account or
+                                    gemini-api
+  ANTIGRAVITY_CONTAINER_NETWORK_POLICY   absolute operator policy JSON path
+  ANTIGRAVITY_CONTAINER_NETWORK_RUNTIME_DIR  private native directory at its
+                                    host path
+  ANTIGRAVITY_CONTAINER_EGRESS_IMAGE  immutable proxy image ID or registry digest
+  ANTIGRAVITY_CONTAINER_MAINTENANCE  authorize image builds and proxy pulls only
+                                    with exact value 1, including the build of a
+                                    missing image
   ANTIGRAVITY_CONTAINER_IMAGE       default: localhost/antigravity-cli:latest
-  ANTIGRAVITY_CONTAINER_STATE_DIR   default: ~/.local/share/antigravity-container/home
+  ANTIGRAVITY_CONTAINER_STATE_DIR   unset: dedicated home
+                                    ~/.local/share/antigravity-container/home;
+                                    a path: that private isolated home; empty:
+                                    shared host ~/.gemini below an ephemeral home
+  ANTIGRAVITY_CONTAINER_CONFIG_DIR  private directory replacing ~/.gemini with
+                                    shared state; inside the session it is
+                                    always /antigravity-home/.gemini; requires
+                                    an empty ANTIGRAVITY_CONTAINER_STATE_DIR
+  ANTIGRAVITY_CONTAINER_TRUST_HOST_CA  trust a host CA bundle: 1, true, or yes
+                                    (default: disabled)
+  ANTIGRAVITY_CONTAINER_CA_BUNDLE   CA bundle file to trust (default: first of
+                                    /etc/ssl/certs/ca-certificates.crt and
+                                    /etc/pki/tls/certs/ca-bundle.crt)
   ANTIGRAVITY_YOLO                  bypass agy approvals (default: disabled)
-  ANTIGRAVITY_CONTAINER_PODMAN      expose the host Podman service (default: disabled)
+  ANTIGRAVITY_CONTAINER_PODMAN      expose the host Podman service (default:
+                                    disabled); rejected in offline and provider
   ANTIGRAVITY_CONTAINER_PODMAN_SOCKET
     default: ${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock
-  GEMINI_API_KEY                    forwarded if set; requires modelProvider: gemini
+  GEMINI_API_KEY                    forwarded if set in unrestricted mode and
+                                    with the gemini-api profile; requires
+                                    modelProvider: gemini
   ANTIGRAVITY_CONTAINER_MEMORY_LIMIT  session memory, integer with k/m/g unit (default: 4g)
   ANTIGRAVITY_CONTAINER_CPU_LIMIT     session CPUs, up to 3 decimals (default: 2)
   ANTIGRAVITY_CONTAINER_PIDS_LIMIT    session process limit (default: 512)
@@ -60,22 +90,92 @@ must not physically be /, /home, /root, /etc, /usr, /var, /bin, /sbin, /lib,
 caller's home or a /mnt/<letter> drive root; descendants such as
 /mnt/d/project are allowed. When the lifetime limit stops a session, a notice
 is printed and the engine client's exit status is returned.
+
+There is no D-Bus session or keyring in the container: agy keeps account
+tokens in files in the private state home, protected by Unix permissions only.
+Sign-in uses the remote URL and code flow with a host browser.
+
+Migration: every launch now needs an explicit ANTIGRAVITY_CONTAINER_NETWORK.
+Set ANTIGRAVITY_CONTAINER_NETWORK=unrestricted to keep the previous networking,
+and add ANTIGRAVITY_CONTAINER_MAINTENANCE=1 to commands that build the image:
+  ANTIGRAVITY_CONTAINER_NETWORK=unrestricted ANTIGRAVITY_CONTAINER_MAINTENANCE=1 bash ./antigravity-container.sh --container-build --version
+Accounts signed in through the removed keyring must sign in again once.
+Offline sessions cannot reach any model service. Restricted failures never
+retry unrestricted networking.
+
+Restricted modes (offline, provider) require host Python 3, a same-host Unix
+rootless Netavark service with Podman >= 4.9, standard OCI seccomp, usable
+Landlock ABI >= 3, a protected installation outside writable workspace/state
+trees, a static guard and SHA-256 manifest in network/bin, and a current local
+qualification report (run --container-qualify alone after preparation or
+relevant updates). Changed boot, engine/backend/security, code/images,
+policy/profile, CA trust or hardening invalidates the report; an unidentifiable
+active LSM policy requires the gate on each launch. Locally-qualified
+installations are distinguished from release-measured acceptance records.
+Restricted sessions receive no host proxy or CA variables; provider mode
+forwards GEMINI_API_KEY only with gemini-api, and offline forwards none.
+AGY_CLI_DISABLE_AUTO_UPDATE=true is set after forwarding; agy telemetry is
+denied by the proxy. Named Unix sockets and the Bubblewrap terminal sandbox
+are unavailable under the guard; the container is the boundary.
+Provider mode uses an external CONNECT proxy that binds the TLS server name
+(initial and retried ClientHello) to the CONNECT host before forwarding; it
+does not prove exclusive communication with your Google account or project.
+Allowed services can receive data: an injected agent can send workspace data
+to an allowed host (google-account: oauth2.googleapis.com and
+cloudcode-pa.googleapis.com; gemini-api: generativelanguage.googleapis.com)
+with an attacker's key or account. Only offline removes this. Provider-hosted
+tools such as web search run at the provider, outside this boundary.
+See network/README.md and docs/network-contract.md.
 EOF
 }
 
+# Help takes precedence regardless of option order and never needs Podman.
+for arg in "$@"; do
+    case "$arg" in --container-help) usage; exit 0 ;; esac
+done
+readonly DEDICATED_HOME_SUFFIX=.local/share/antigravity-container/home
+for arg in "$@"; do
+    if [[ "$arg" == --container-qualify ]]; then
+        [[ $# == 1 ]] || die '--container-qualify must be used alone'
+        command -v python3 >/dev/null || die 'host Python 3 is required for qualification'
+        qualify_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
+        # An unset state directory selects the dedicated home; qualification
+        # binds the same writable paths as the launches it qualifies.
+        if [[ -z "${ANTIGRAVITY_CONTAINER_STATE_DIR+x}" && "${HOME:-}" == /* ]]; then
+            export ANTIGRAVITY_CONTAINER_STATE_DIR="$HOME/$DEDICATED_HOME_SUFFIX"
+        fi
+        exec python3 -I "$qualify_dir/network/qualify.py" qualify
+    fi
+done
+
 build_image=0
+qualification_probe=0
 shell_mode=0
 git_worktree=0
 args=()
 for arg in "$@"; do
     case "$arg" in
-        --container-help) usage; exit 0 ;;
+        --container-qualify-probe)
+            [[ $# == 1 ]] || die 'the fixed qualification probe must be used alone'
+            qualification_probe=1 ;;
         --container-build) build_image=1 ;;
         --container-shell) shell_mode=1 ;;
         --container-git-worktree) git_worktree=1 ;;
         *) args+=("$arg") ;;
     esac
 done
+
+# An explicit mode precedes every other check, engine query and state operation.
+# add-container-setup replaces this message with guided setup.
+[[ -n "${ANTIGRAVITY_CONTAINER_NETWORK:-}" ]] \
+    || die 'ANTIGRAVITY_CONTAINER_NETWORK is required: set offline, provider, or unrestricted (unrestricted keeps the previous networking behavior)'
+network_mode=$ANTIGRAVITY_CONTAINER_NETWORK
+case "$network_mode" in
+    offline|provider|unrestricted) ;;
+    *) die 'ANTIGRAVITY_CONTAINER_NETWORK must be offline, provider, or unrestricted' ;;
+esac
+restricted=0
+[[ "$network_mode" == unrestricted ]] || restricted=1
 
 boolean() {
     case "${2,,}" in
@@ -85,8 +185,21 @@ boolean() {
     esac
 }
 yolo=$(boolean ANTIGRAVITY_YOLO "${ANTIGRAVITY_YOLO:-}")
+trust_host_ca=$(boolean ANTIGRAVITY_CONTAINER_TRUST_HOST_CA "${ANTIGRAVITY_CONTAINER_TRUST_HOST_CA:-}")
 podman_access=0
 [[ "${ANTIGRAVITY_CONTAINER_PODMAN:-}" != 1 ]] || podman_access=1
+if ((restricted && podman_access)); then
+    die 'restricted networking rejects ANTIGRAVITY_CONTAINER_PODMAN=1: the host API bypasses egress enforcement; select explicit unrestricted mode for delegation'
+fi
+# The provider credential follows the selected profile (agent/profile.json).
+profile_credential=''
+if [[ "$network_mode" == provider ]]; then
+    [[ -n "${ANTIGRAVITY_CONTAINER_NETWORK_PROFILE:-}" && -n "${ANTIGRAVITY_CONTAINER_NETWORK_POLICY:-}" ]] \
+        || die 'provider mode requires ANTIGRAVITY_CONTAINER_NETWORK_PROFILE and ANTIGRAVITY_CONTAINER_NETWORK_POLICY'
+    [[ -n "${ANTIGRAVITY_CONTAINER_NETWORK_RUNTIME_DIR:-}" && -n "${ANTIGRAVITY_CONTAINER_EGRESS_IMAGE:-}" ]] \
+        || die 'provider mode requires a private host-path ANTIGRAVITY_CONTAINER_NETWORK_RUNTIME_DIR and immutable ANTIGRAVITY_CONTAINER_EGRESS_IMAGE'
+    [[ "$ANTIGRAVITY_CONTAINER_NETWORK_PROFILE" != gemini-api ]] || profile_credential=GEMINI_API_KEY
+fi
 
 # Session budgets and lifetime, validated before any engine or state operation.
 # Same rules and messages as the claude-container reference (sandbox-ref-2).
@@ -112,8 +225,10 @@ if [[ "$cpu_text" =~ ^([0-9]{1,4})(\.([0-9]{1,3}))?$ ]]; then
     ((cpu_nano <= 1024000000000)) || cpu_nano=0
 fi
 ((cpu_nano > 0)) || die 'ANTIGRAVITY_CONTAINER_CPU_LIMIT must be a positive number of CPUs with at most 3 decimals, for example 2 or 1.5'
+# shellcheck disable=SC2015 # die must run when either test fails.
 [[ "$pids_text" =~ ^(0|[1-9][0-9]{0,9})$ ]] && ((pids_text > 0 && pids_text <= 4194304)) \
     || die 'ANTIGRAVITY_CONTAINER_PIDS_LIMIT must be a positive integer process count up to 4194304'
+# shellcheck disable=SC2015 # die must run when either test fails.
 [[ "$timeout_text" =~ ^(0|[1-9][0-9]{0,9})$ ]] && ((timeout_text <= 2147483647)) \
     || die 'ANTIGRAVITY_CONTAINER_RUN_TIMEOUT must be whole seconds; 0 disables the lifetime limit'
 pids_limit=$((10#$pids_text))
@@ -138,6 +253,35 @@ if ((unsafe_workspace)); then
     printf 'antigravity-container: WARNING: sensitive workspace explicitly exposed read/write: %s\n' "$workspace_mount" >&2
 fi
 
+# State: unset selects the dedicated home, a path an isolated home, and an
+# empty value shared host ~/.gemini (or the configuration override). Only
+# lexical checks precede the engine; creation and validation follow it.
+readonly CONTAINER_HOME=/antigravity-home
+config_override=${ANTIGRAVITY_CONTAINER_CONFIG_DIR:-}
+if [[ -n "${ANTIGRAVITY_CONTAINER_STATE_DIR+x}" && -z "$ANTIGRAVITY_CONTAINER_STATE_DIR" ]]; then
+    shared_state=1
+    state_variable=ANTIGRAVITY_CONTAINER_CONFIG_DIR
+    state_request=${config_override:-$HOME/.gemini}
+else
+    shared_state=0
+    [[ -z "$config_override" ]] \
+        || die 'ANTIGRAVITY_CONTAINER_CONFIG_DIR requires shared state; set ANTIGRAVITY_CONTAINER_STATE_DIR to an empty value, or unset ANTIGRAVITY_CONTAINER_CONFIG_DIR to keep an isolated home'
+    state_variable=ANTIGRAVITY_CONTAINER_STATE_DIR
+    state_request=${ANTIGRAVITY_CONTAINER_STATE_DIR:-$HOME/$DEDICATED_HOME_SUFFIX}
+fi
+[[ "$state_request" == /* && "$state_request" != *:* && "$state_request" != *$'\n'* && "$state_request" != *$'\r'* ]] \
+    || die "$state_variable must be an absolute path without colon, CR or LF: $state_request"
+state_physical=$state_request
+if [[ -d "$state_request" ]]; then
+    state_physical=$(cd -- "$state_request" && pwd -P) || die "cannot resolve state directory: $state_request"
+elif [[ -d "$(dirname -- "$state_request")" ]]; then
+    state_physical=$(cd -- "$(dirname -- "$state_request")" && pwd -P) || die "cannot resolve state directory: $state_request"
+    state_physical=$state_physical/$(basename -- "$state_request")
+fi
+state_physical=${state_physical%/}
+[[ "$state_physical/" != "$workspace_mount/"* && "$workspace_mount/" != "$state_physical/"* ]] \
+    || die "$state_variable must not overlap the workspace: $state_request"
+
 command -v podman >/dev/null || die 'Podman is required on the host'
 command -v timeout >/dev/null || die 'coreutils timeout is required for bounded session cleanup'
 # Unix service access also supports running this wrapper inside another container
@@ -160,12 +304,26 @@ capture_engine_info() {
     engine_response=${engine_response%$'\n'}
     [[ "$engine_response" != *$'\n'* && "$engine_response" != *$'\r'* ]]
 }
-capture_engine_info info --format '{{.Host.Security.Rootless}} {{.Host.OS}} {{.Host.ServiceIsRemote}}' || die 'cannot query Podman or invalid multiline response; check the local rootless service'
+capture_engine_info info --format '{{.Host.Security.Rootless}} {{.Host.OS}} {{.Host.ServiceIsRemote}}' || die 'cannot query Podman or invalid engine response; check local rootless Podman or the same-host Unix service'
+runtime_info=$engine_response
 launch_pattern='^[[:blank:]]*true[[:blank:]]+linux[[:blank:]]+(true|false)[[:blank:]]*$'
 [[ "$engine_response" =~ $launch_pattern ]] || die 'a complete Linux rootless Podman response is required (true linux true|false)'
 remote=${BASH_REMATCH[1]}
 if [[ "$remote" == true && "${CONTAINER_HOST:-}" != unix:///?* ]]; then
     die 'remote Podman contexts are not supported; set CONTAINER_HOST to a local Unix socket'
+fi
+if ((restricted)); then
+    command -v python3 >/dev/null || die 'host Python 3 is required for restricted network policy validation'
+    [[ "$remote" == true ]] \
+        || die 'restricted networking currently requires the tested same-host Unix service; local-engine enforcement is unverified'
+    capture_engine_info info --format '{{.Host.NetworkBackend}}' || die 'cannot verify restricted network backend'
+    network_backend=$engine_response
+    capture_engine_info version --format '{{.Server.Version}}' || die 'cannot verify restricted network server version'
+    network_version=$engine_response
+    capture_engine_info info --format '{{json .Host}}' || die 'cannot verify restricted platform security policy'
+    network_platform=$engine_response
+elif ((qualification_probe)); then
+    die 'qualification probes require restricted networking'
 fi
 
 caller_uid=$(id -u)
@@ -189,25 +347,116 @@ fi
 script_path=$(readlink -f -- "${BASH_SOURCE[0]}")
 script_dir=$(dirname -- "$script_path")
 image="${ANTIGRAVITY_CONTAINER_IMAGE:-localhost/antigravity-cli:latest}"
-state_dir="${ANTIGRAVITY_CONTAINER_STATE_DIR:-$HOME/.local/share/antigravity-container/home}"
 
-(umask 077; mkdir -p -- "$state_dir") || die "cannot create state directory: $state_dir"
-state_dir=$(cd -- "$state_dir" && pwd -P) || die "cannot resolve state directory: $state_dir"
-[[ -r "$state_dir" && -w "$state_dir" && -x "$state_dir" ]] || die "state directory is not accessible: $state_dir"
-state_mode=$(stat -c '%a' -- "$state_dir")
-[[ $(stat -c '%u' -- "$state_dir") == "$caller_uid" ]] || die 'the state directory must belong to the calling user'
-(( (8#$state_mode & 077) == 0 )) || die 'the state directory must be private (chmod 700); use a native Linux filesystem if this filesystem does not enforce Unix permissions'
+validate_private() {
+    local path=$1 mode
+    [[ -r "$path" && -w "$path" && -x "$path" ]] || die "state directory is not accessible: $path"
+    mode=$(stat -c '%a' -- "$path")
+    [[ $(stat -c '%u' -- "$path") == "$caller_uid" ]] || die 'the state directory must belong to the calling user'
+    (( (8#$mode & 077) == 0 )) || die 'the state directory must be private (chmod 700); use a native Linux filesystem if this filesystem does not enforce Unix permissions'
+}
+(umask 077; mkdir -p -- "$state_request") || die "cannot create state directory: $state_request"
+state_dir=$(cd -- "$state_request" && pwd -P) || die "cannot resolve state directory: $state_request"
+validate_private "$state_dir"
 
-if ((build_image)); then
-    podman build --no-cache --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
-else
+ca_bundle=''
+if ((trust_host_ca)); then
+    if [[ -n "${ANTIGRAVITY_CONTAINER_CA_BUNDLE:-}" ]]; then
+        [[ -f "$ANTIGRAVITY_CONTAINER_CA_BUNDLE" ]] || die "ANTIGRAVITY_CONTAINER_CA_BUNDLE is not a file: $ANTIGRAVITY_CONTAINER_CA_BUNDLE"
+        ca_bundle=$(readlink -f -- "$ANTIGRAVITY_CONTAINER_CA_BUNDLE")
+    else
+        for candidate in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
+            if [[ -f "$candidate" ]]; then
+                ca_bundle=$candidate
+                break
+            fi
+        done
+        [[ -n "$ca_bundle" ]] || die 'no default CA bundle found; set ANTIGRAVITY_CONTAINER_CA_BUNDLE to a bundle file'
+    fi
+    [[ "$ca_bundle" != *[:$'\n'$'\r']* ]] || die "CA bundle path must not contain colon, CR or LF: $ca_bundle"
+    if ((shared_state == 0)); then
+        # Resolve first so an existing symlink cannot move the CA mount parent.
+        ca_parent=$(readlink -m -- "$state_dir/ca")
+        [[ "$ca_parent" == "$state_dir/ca" ]] || die "CA mount parent escapes the state home: $state_dir/ca"
+        if [[ ! -e "$ca_parent" ]]; then
+            (umask 077; mkdir -- "$ca_parent") || die "cannot create state directory: $ca_parent"
+        fi
+        validate_private "$ca_parent"
+    fi
+fi
+
+# Restricted sessions use the shared helper; this wrapper keeps only the
+# agent-specific command, environment, state and credentials.
+session_helper=(python3 -I "$script_dir/network/session.py")
+network_inputs=()
+qualification_inputs=()
+guard_digest=''
+if ((restricted)); then
+    network_inputs=(--installation "$script_dir" --writable "$workspace_mount" --writable "$state_dir"
+        --mount-target "$workspace_mount" --mount-target "$CONTAINER_HOME")
+    if [[ "$network_mode" == provider ]]; then
+        network_inputs+=(--policy "$ANTIGRAVITY_CONTAINER_NETWORK_POLICY"
+            --profile "$ANTIGRAVITY_CONTAINER_NETWORK_PROFILE" --proxy-image "$ANTIGRAVITY_CONTAINER_EGRESS_IMAGE"
+            --runtime "$ANTIGRAVITY_CONTAINER_NETWORK_RUNTIME_DIR")
+    fi
+    prepare_inputs=(--mode "$network_mode" --server-version "$network_version"
+        --backend "$network_backend" --endpoint "${CONTAINER_HOST:-}" --engine "$runtime_info")
+    if ((qualification_probe)); then
+        prepare_inputs+=(--probe --qualification-input "${ANTIGRAVITY_CONTAINER_QUALIFICATION_INPUT:-}"
+            --workspace "$workspace")
+    fi
+    prepared=$(printf '%s\n' "$network_platform" | "${session_helper[@]}" prepare "${network_inputs[@]}" "${prepare_inputs[@]}") \
+        || exit 1
+    read -r guard_digest qualification_token qualification_tls <<< "$prepared"
+    if ((qualification_probe)); then
+        qualification_inputs=(--probe --token "$qualification_token" --workspace "$workspace"
+            --qualification-input "${ANTIGRAVITY_CONTAINER_QUALIFICATION_INPUT:-}")
+        [[ "$qualification_tls" != 1 ]] || qualification_inputs+=(--tls)
+    fi
+fi
+
+# Every build, including the automatic build of a missing image, is maintenance:
+# it downloads the pinned agy release outside runtime filtering.
+maintenance=0
+[[ "${ANTIGRAVITY_CONTAINER_MAINTENANCE:-}" != 1 ]] || maintenance=1
+needs_build=$build_image
+if ((build_image == 0)); then
     if podman image exists "$image"; then
         :
     else
         image_status=$?
         [[ "$image_status" == 1 ]] || die "cannot inspect image: $image"
-        podman build --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
+        needs_build=1
     fi
+fi
+if ((needs_build)); then
+    ((maintenance)) || die "image $image needs a build; prepare it with exact ANTIGRAVITY_CONTAINER_MAINTENANCE=1 (host pulls and build RUN steps are outside runtime filtering)"
+    build_args=(--tag "$image" --file "$script_dir/Containerfile")
+    ((build_image == 0)) || build_args=(--no-cache "${build_args[@]}")
+    build_status=0
+    podman build "${build_args[@]}" "$script_dir" </dev/null || build_status=$?
+    if ((build_status)); then
+        printf 'antigravity-container: image build failed: %s (status %s)\n' "$image" "$build_status" >&2
+        exit "$build_status"
+    fi
+fi
+if [[ "$network_mode" == provider ]]; then
+    if podman image exists "$ANTIGRAVITY_CONTAINER_EGRESS_IMAGE"; then
+        :
+    else
+        image_status=$?
+        [[ "$image_status" == 1 ]] || die 'cannot inspect immutable egress proxy image'
+        ((maintenance)) && [[ "$ANTIGRAVITY_CONTAINER_EGRESS_IMAGE" == *@sha256:* ]] \
+            || die 'proxy image is absent; prepare the pinned artifact under explicit operator maintenance authorization (ANTIGRAVITY_CONTAINER_MAINTENANCE=1 and a registry digest)'
+        podman pull "$ANTIGRAVITY_CONTAINER_EGRESS_IMAGE"
+    fi
+fi
+# Restricted sessions and their qualification bind the immutable image ID.
+session_image=$image
+if ((restricted)); then
+    capture_engine_info image inspect --format '{{.Id}}' "$image" || die 'cannot resolve restricted runtime image identity'
+    [[ "$engine_response" =~ ^(sha256:)?[a-f0-9]{64}$ ]] || die 'invalid restricted runtime image identity'
+    session_image=$engine_response
 fi
 
 container_args=(
@@ -219,18 +468,40 @@ container_args=(
     --tmpfs '/tmp:rw,exec,nosuid,nodev,mode=1777,size=512m'
     --tmpfs '/run:rw,nosuid,nodev,noexec,mode=1777,size=32m'
     --tmpfs '/var/tmp:rw,nosuid,nodev,noexec,mode=1777,size=512m'
-    --env HOME=/antigravity-home
+    --env "HOME=$CONTAINER_HOME"
     --env EDITOR=nano --env VISUAL=nano
-    --env AGY_CLI_DISABLE_AUTO_UPDATE=true
     --volume "$workspace_mount:$workspace_mount:rw"
-    --volume "$state_dir:/antigravity-home:rw"
 )
+if ((shared_state)); then
+    # The shared configuration is the only persistent part of an ephemeral home.
+    container_args+=(--tmpfs "$CONTAINER_HOME:rw,nosuid,nodev,mode=1777,size=64m"
+        --volume "$state_dir:$CONTAINER_HOME/.gemini:rw")
+else
+    container_args+=(--volume "$state_dir:$CONTAINER_HOME:rw")
+fi
+# The profile's configuration variable names the effective directory in the
+# session; the host value is never forwarded.
+container_args+=(--env "ANTIGRAVITY_CONTAINER_CONFIG_DIR=$CONTAINER_HOME/.gemini")
+if ((trust_host_ca)); then
+    container_args+=(--volume "$ca_bundle:$CONTAINER_HOME/ca/bundle.pem:ro")
+    for variable in SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE NODE_EXTRA_CA_CERTS; do
+        container_args+=(--env "$variable=$CONTAINER_HOME/ca/bundle.pem")
+    done
+fi
 ((run_timeout == 0)) || container_args+=(--timeout "$run_timeout")
 if [[ -t 0 && -t 1 ]]; then
     container_args+=(--tty)
     [[ -z "${TERM:-}" ]] || container_args+=(--env TERM)
 fi
-[[ ! -v GEMINI_API_KEY ]] || container_args+=(--env GEMINI_API_KEY)
+# Values for credentials remain in the creating client's environment, never argv.
+# Restricted modes forward no host proxy or CA value and only the profile's key.
+if ((restricted)); then
+    [[ -z "$profile_credential" || ! -v "$profile_credential" ]] || container_args+=(--env "$profile_credential")
+else
+    [[ ! -v GEMINI_API_KEY ]] || container_args+=(--env GEMINI_API_KEY)
+fi
+# Protected values follow forwarding: no bus or keyring, and no self-update.
+container_args+=(--unsetenv DBUS_SESSION_BUS_ADDRESS --env AGY_CLI_DISABLE_AUTO_UPDATE=true)
 if ((podman_access)); then
     container_args+=(
         --volume "$host_socket:/run/podman/podman.sock:rw"
@@ -239,8 +510,10 @@ if ((podman_access)); then
 else
     container_args+=(--unsetenv CONTAINER_HOST)
 fi
-if ((shell_mode)); then
-    container_args+=(--entrypoint /bin/bash)
+if ((qualification_probe)); then
+    args=()  # The shared helper supplies the fixed probe command.
+elif ((shell_mode)); then
+    ((restricted)) || container_args+=(--entrypoint /bin/bash)
     args=()
 elif ((yolo)); then
     args=(--dangerously-skip-permissions "${args[@]}")
@@ -249,15 +522,6 @@ fi
 prefix=${workspace##*/}
 prefix=$(printf '%s' "$prefix" | sed -E 's/[^a-zA-Z0-9_.-]+/-/g; s/^[.-]+//; s/[.-]+$//')
 prefix=${prefix:-antigravity-container}
-names=$(podman ps --all --format '{{.Names}}') || die 'cannot list Podman containers'
-next_index=0
-while IFS= read -r name; do
-    [[ "$name" == "$prefix-"* ]] || continue
-    suffix=${name#"$prefix-"}
-    [[ "$suffix" =~ ^[0-9]+$ && ${#suffix} -lt 10 ]] || continue
-    numeric=$((10#$suffix))
-    ((numeric < next_index)) || next_index=$((numeric + 1))
-done <<< "$names"
 
 # Ownership comes from a private CID file, including when create is interrupted.
 container_id=''
@@ -268,6 +532,8 @@ pending_status=0
 creating=0
 attached=0
 name=''
+qualification_check_pid=''
+session_start_pid=''
 
 # shellcheck disable=SC2329 # Invoked by signal traps.
 record_signal() {
@@ -276,7 +542,39 @@ record_signal() {
         pending_status=$2
     fi
     # A pending create is resolved by cleanup, with a finite completion budget.
-    [[ -z "$client_pid" ]] || exit "$pending_status"
+    if [[ -n "$client_pid" || -n "$qualification_check_pid" || -n "$session_start_pid" ]]; then
+        exit "$pending_status"
+    fi
+}
+
+# Restricted helpers: TERM, a bounded grace period, then KILL and reap.
+# shellcheck disable=SC2329 # Invoked through signal/EXIT cleanup.
+child_running() {
+    local child=$1 running
+    [[ -n "$child" ]] || return 1
+    while IFS= read -r running; do
+        [[ "$running" != "$child" ]] || return 0
+    done < <(jobs -p)
+    return 1
+}
+# shellcheck disable=SC2329 # Invoked through signal/EXIT cleanup.
+reap_helper() {
+    local child=$1 grace=$2 until
+    child_running "$child" || { wait "$child" 2>/dev/null || true; return 0; }
+    kill -TERM "$child" 2>/dev/null || true
+    until=$((SECONDS + grace))
+    while child_running "$child" && ((SECONDS < until)); do sleep 0.05; done
+    if child_running "$child"; then
+        printf 'antigravity-container: restricted helper %s did not confirm cleanup before the deadline\n' "$child" >&2
+        kill -KILL "$child" 2>/dev/null || true
+    fi
+    until=$((SECONDS + 1))
+    while child_running "$child" && ((SECONDS < until)); do sleep 0.05; done
+    if child_running "$child"; then
+        printf 'antigravity-container: cannot reap restricted helper %s within deadline; inspect it explicitly\n' "$child" >&2
+    else
+        wait "$child" 2>/dev/null || true
+    fi
 }
 
 # shellcheck disable=SC2329 # Called by EXIT cleanup and its client reaper.
@@ -318,9 +616,23 @@ recover_container_id() {
 
 # shellcheck disable=SC2329 # Invoked by the EXIT trap.
 cleanup() {
-    local status=$? control_status=0
+    local status=$? control_status=0 shutdown_deadline
     ((pending_status == 0)) || status=$pending_status
     trap '' TERM INT HUP
+    shutdown_deadline=$((SECONDS + 20))
+    if [[ -n "$qualification_check_pid" ]]; then
+        reap_helper "$qualification_check_pid" 13
+        qualification_check_pid=''
+    fi
+    if [[ -n "$session_start_pid" ]]; then
+        # The session helper owns a separate process group. Reap the whole
+        # group before its leader, including an engine client that ignores TERM.
+        kill -TERM -- "-$session_start_pid" 2>/dev/null || true
+        sleep 0.1
+        kill -KILL -- "-$session_start_pid" 2>/dev/null || true
+        reap_helper "$session_start_pid" 1
+        session_start_pid=''
+    fi
     if ((creating)); then
         if [[ -n "$client_pid" ]]; then
             wait_for_client_until "$((SECONDS + 5))" || true
@@ -346,6 +658,11 @@ cleanup() {
         fi
     fi
     reap_client
+    if [[ "$network_mode" == provider && -n "$session_tmp" ]]; then
+        # Owned proxy recovery/removal and diagnostics share the remaining budget.
+        "${session_helper[@]}" stop --session "$session_tmp" --deadline "$((shutdown_deadline - SECONDS))" \
+            --container "${container_id:-unknown}" || true
+    fi
     [[ -z "$session_tmp" ]] || rm -rf -- "$session_tmp" || true
     return "$status"
 }
@@ -353,15 +670,72 @@ trap cleanup EXIT
 trap 'record_signal TERM 143' TERM
 trap 'record_signal INT 130' INT
 trap 'record_signal HUP 129' HUP
-session_tmp=$(umask 077; mktemp -d) || die 'cannot create private session bookkeeping directory'
+if [[ "$network_mode" == provider ]]; then
+    session_tmp=$(umask 077; mktemp -d -- "$ANTIGRAVITY_CONTAINER_NETWORK_RUNTIME_DIR/session.XXXXXXXXXXXX") \
+        || die 'cannot create private session directory in ANTIGRAVITY_CONTAINER_NETWORK_RUNTIME_DIR'
+else
+    session_tmp=$(umask 077; mktemp -d) || die 'cannot create private session bookkeeping directory'
+fi
 (umask 077; : > "$session_tmp/output"; : > "$session_tmp/error")
 ((pending_status == 0)) || exit "$pending_status"
+printf 'antigravity-container: network mode=%s\n' "$network_mode" >&2
+if ((restricted && qualification_probe == 0)); then
+    # The report binds the effective state; an unset variable is the dedicated home.
+    ANTIGRAVITY_CONTAINER_IMAGE="$session_image" ANTIGRAVITY_CONTAINER_STATE_DIR="${ANTIGRAVITY_CONTAINER_STATE_DIR-$state_dir}" \
+        python3 -I "$script_dir/network/qualify.py" check &
+    qualification_check_pid=$!
+    qualification_status=0
+    wait "$qualification_check_pid" || qualification_status=$?
+    qualification_check_pid=''
+    ((pending_status == 0)) || exit "$pending_status"
+    ((qualification_status == 0)) || exit "$qualification_status"
+fi
+if [[ "$network_mode" == provider ]]; then
+    "${session_helper[@]}" start "${network_inputs[@]}" "${qualification_inputs[@]}" --session "$session_tmp" \
+        --guard-digest "$guard_digest" >"$session_tmp/policy.identity" &
+    session_start_pid=$!
+    start_status=0
+    wait "$session_start_pid" || start_status=$?
+    session_start_pid=''
+    ((pending_status == 0)) || exit "$pending_status"
+    ((start_status == 0)) || exit "$start_status"
+fi
+if ((restricted)); then
+    application=()
+    if ((shell_mode)); then
+        application=(/bin/bash)
+    elif ((qualification_probe == 0)); then
+        application=(/usr/local/bin/antigravity-entrypoint "${args[@]}")
+    fi
+    "${session_helper[@]}" agent-args --installation "$script_dir" --mode "$network_mode" \
+        --session "$session_tmp" --guard-digest "$guard_digest" "${qualification_inputs[@]}" \
+        -- "${application[@]}" >"$session_tmp/agent.args"
+    mapfile -d '' -t restricted_args <"$session_tmp/agent.args"
+    [[ "${restricted_args[0]:-}" =~ ^[0-9]+$ ]] || die 'invalid restricted session arguments'
+    container_args+=("${restricted_args[@]:1:${restricted_args[0]}}")
+    args=("${restricted_args[@]:$((1 + restricted_args[0]))}")
+fi
+
+names=$(podman ps --all --format '{{.Names}}') || die 'cannot list Podman containers'
+((pending_status == 0)) || exit "$pending_status"
+next_index=0
+while IFS= read -r name; do
+    [[ "$name" == "$prefix-"* ]] || continue
+    suffix=${name#"$prefix-"}
+    [[ "$suffix" =~ ^[0-9]+$ && ${#suffix} -lt 10 ]] || continue
+    numeric=$((10#$suffix))
+    ((numeric < next_index)) || next_index=$((numeric + 1))
+done <<< "$names"
+name=''
+
 for ((attempt=0; attempt<20; attempt++)); do
     ((pending_status == 0)) || exit "$pending_status"
     name="$prefix-$next_index"
     rm -f -- "$session_tmp/cid"
     creating=1
-    podman create --name "$name" --cidfile "$session_tmp/cid" "${container_args[@]}" "$image" "${args[@]}" \
+    podman create --name "$name" --cidfile "$session_tmp/cid" \
+        --label "io.antigravity-container.session=${session_tmp##*/}" \
+        "${container_args[@]}" "$session_image" "${args[@]}" \
         </dev/null >"$session_tmp/output" 2>"$session_tmp/error" &
     client_pid=$!
     ((pending_status == 0)) || exit "$pending_status"

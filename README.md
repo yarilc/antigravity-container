@@ -6,14 +6,19 @@ container. The wrapper follows the workflow of
 [codex-container](https://github.com/yarilc/codex-container).
 
 The default session exposes the current project and a dedicated application
-home. YOLO and access to the host Podman service are independent opt-ins.
+home. Every launch selects a network mode: `offline`, `provider` (an
+exact-destination egress proxy) or `unrestricted`. YOLO and access to the host
+Podman service are independent opt-ins.
 
 ## Requirements
 
 The host needs Linux, Bash 4.3+, Podman with a rootless engine, and standard
 utilities (`id`, `readlink`, `dirname`, `mkdir`, `sed`, `stat`, `mktemp`, and coreutils `timeout`). No host Node,
-Python, Google CLI, browser service, or keyring service is required. Network
-access is needed to build the image, sign in, and contact model services.
+Google CLI, browser service, or keyring service is required. The restricted
+modes (`offline`, `provider`) also need host Python 3, a same-host rootless
+Podman 4.9 or later Unix service with Netavark, and Landlock ABI 3 or later;
+see [Network modes](#network-modes). Network access is needed to build the
+image, sign in, and contact model services.
 Linux amd64 is verified in the recorded test environment. Linux arm64 is an
 intended target but remains unverified because no arm64 test environment is
 currently available. Actual results and limitations are recorded in
@@ -147,10 +152,15 @@ independent of any optional delegation socket override.
 
 ```bash
 chmod +x antigravity-container.sh
-./antigravity-container.sh --container-build --version
+export ANTIGRAVITY_CONTAINER_NETWORK=unrestricted
+ANTIGRAVITY_CONTAINER_MAINTENANCE=1 ./antigravity-container.sh --container-build --version
 cd /absolute/path/to/your-project
 /absolute/path/to/antigravity-container/antigravity-container.sh
 ```
+
+Every launch needs an explicit `ANTIGRAVITY_CONTAINER_NETWORK`; without one the
+wrapper stops before any engine call. Every image build, including the build of
+a missing image, needs the exact `ANTIGRAVITY_CONTAINER_MAINTENANCE=1`.
 
 You can replace the native command with an alias:
 
@@ -162,52 +172,121 @@ agy --container-help
 ```
 
 The wrapper handles only `--container-build`, `--container-shell`,
-`--container-git-worktree`, and `--container-help`. Other arguments retain their
+`--container-git-worktree`, `--container-qualify`, and `--container-help`. Other arguments retain their
 order, spaces, and empty values when forwarded to `agy`. Shell mode starts
 Bash instead of `agy` and ignores CLI arguments. Help for the wrapper requires
 no engine and creates no state. Non-interactive CLI invocation does not
 allocate a TTY; stdin is preserved.
 
+## Network modes
+
+| Mode | Agent access | Host Podman delegation |
+| --- | --- | --- |
+| unset or empty | Launch stops before engine calls and state creation | No session |
+| `offline` | Own loopback, pipes and connected socket pairs only | Rejected |
+| `provider` | As offline, plus one channel to an exact-destination proxy | Rejected |
+| `unrestricted` (explicit only) | Ordinary networking, as before this mode switch | Exact opt-in allowed |
+
+Restricted modes run a native guard (Landlock plus seccomp) as the first
+process, deny new Unix sockets and every direct route, and never fall back to
+unrestricted networking. YOLO, settings files, `modelProvider` and shell mode
+cannot broaden them. Before the first restricted launch, prepare the operator
+inputs and qualify the installation:
+
+```bash
+# Guard toolchain, guard and proxy image (maintenance steps):
+podman tag <reference toolchain image> localhost/antigravity-guard-toolchain:development
+ANTIGRAVITY_CONTAINER_MAINTENANCE=1 bash network/build-guard.sh "$PWD/network/bin"
+ANTIGRAVITY_CONTAINER_MAINTENANCE=1 podman build --tag localhost/antigravity-egress:local \
+    --file network/Containerfile network
+ANTIGRAVITY_CONTAINER_NETWORK=offline ./antigravity-container.sh --container-qualify
+```
+
+Provider mode also needs `ANTIGRAVITY_CONTAINER_NETWORK_PROFILE`,
+`ANTIGRAVITY_CONTAINER_NETWORK_POLICY` (normally `agent/policies/default.json`),
+a private native `ANTIGRAVITY_CONTAINER_NETWORK_RUNTIME_DIR` and the immutable
+`ANTIGRAVITY_CONTAINER_EGRESS_IMAGE`, and its own qualification:
+
+| Profile | Destinations | Credential |
+| --- | --- | --- |
+| `google-account` | `oauth2.googleapis.com:443`, `cloudcode-pa.googleapis.com:443` | account tokens in the state home |
+| `gemini-api` | `generativelanguage.googleapis.com:443` | `GEMINI_API_KEY` |
+
+Restricted sessions receive no host proxy or CA variable; only `gemini-api`
+forwards `GEMINI_API_KEY`. `AGY_CLI_DISABLE_AUTO_UPDATE=true` is protected, and
+the proxy denies the update and telemetry hosts (`play.googleapis.com`; the
+`telemetryEnabled` setting does not stop it on 1.5.3).
+
+**Allowed services can receive data.** The proxy binds the TLS server name to
+the allowed host, but it cannot tell your credentials from an attacker's: an
+injected agent can send workspace data to an allowed host with its own Gemini
+API key or Google account. Only `offline` removes this channel. Provider-hosted
+tools such as web search run at Google, outside the local boundary. Image
+builds and pulls happen outside runtime filtering, under maintenance.
+
+Qualification reports are local and bound to the boot, the engine and its
+security settings, the installed code and images, the policy and profile, CA
+trust and the budgets. A reboot or any such change requires
+`--container-qualify` again; an unidentifiable active SELinux or AppArmor
+policy forces the gate on every launch. The shipped release acceptance
+inventory is empty, so installations report `locally-qualified`. The full
+contract is in [docs/network-contract.md](docs/network-contract.md), and the
+shared mechanism in [network/README.md](network/README.md).
+
+### Migration
+
+- Set `ANTIGRAVITY_CONTAINER_NETWORK=unrestricted` to keep the previous
+  networking, and add `ANTIGRAVITY_CONTAINER_MAINTENANCE=1` to commands that
+  build the image.
+- The private D-Bus session and GNOME keyring were removed: `agy` now keeps
+  account tokens in files. Accounts signed in through the keyring sign in again
+  once. The old keyring files stay in the state home
+  (`.local/share/keyrings/`); delete them after the new sign-in if you no
+  longer need them.
+- `ANTIGRAVITY_CONTAINER_PODMAN=1` works only with `unrestricted`.
+
 ## Authentication
 
-Application state lives in a separate home, not the host's generic `~/.gemini`.
-Settings are at
+Application state lives in a dedicated home, not the host's generic
+`~/.gemini`, unless you select shared state. Settings are at
 `~/.local/share/antigravity-container/home/.gemini/antigravity-cli/settings.json`
 on the host by default. The container sees them under
 `/antigravity-home/.gemini/antigravity-cli/settings.json`.
 
-For account sign-in, launch from an interactive terminal. The entrypoint starts
-a private D-Bus session and a GNOME Secret Service keyring in the container.
-Choose and confirm a nonempty passphrase when creating the keyring. On later
-launches, unlock it with the same passphrase. The passphrase is read without
-echo from the terminal, separately from CLI stdin; it is not saved in files,
-environment variables, or command arguments. An incorrect passphrase stops
-startup. Help and version do not require unlocking.
+| `ANTIGRAVITY_CONTAINER_STATE_DIR` | State |
+| --- | --- |
+| unset | Dedicated home `~/.local/share/antigravity-container/home` |
+| a path | That private isolated home |
+| empty | Shared host `~/.gemini` (or `ANTIGRAVITY_CONTAINER_CONFIG_DIR`) below an ephemeral home |
 
-The account path requests Google's remote sign-in flow using a process-local
-SSH environment marker, so authorization can use an external browser and a
-code entered in the terminal. No host SSH client, SSH agent, display, D-Bus,
-or keyring is mounted. Google account login, token reuse, and `/logout` must
-be verified with an actual account; see the validation record for current
-coverage. A successful Secret Service test alone does not establish working
-Google OAuth.
+With shared state only `.gemini` persists; `agy` files under `~/.config`
+(plugin secrets, user scope) last only for the session. Other tools that use
+`~/.gemini`, such as Gemini CLI, then share their files with the container.
 
-Keyring files and Google token profiles persist in the dedicated application
-home. Keep this directory private and protect its backups. State creation,
-physical path resolution, ownership, access, and permission checks complete before image inspection or build, including explicit rebuilds.
-A new state directory can therefore remain after a later image failure. The
-wrapper scopes its private creation umask to state directory creation; this
-does not set the container process umask. Shell and API-provider file modes
-follow their runtime settings; the account keyring helper independently uses
-`077`. Newly created directories use user-only permissions; existing directory
-permissions are not changed recursively. The state directory must belong to the caller and deny
+For account sign-in, launch from an interactive terminal and choose Google
+OAuth. The container has no D-Bus session or keyring, so `agy` uses its file
+token storage (`~/.gemini/antigravity-cli/antigravity-oauth-token`). A
+process-local SSH environment marker requests Google's remote sign-in flow, so
+authorization uses an external browser and a code entered in the terminal. No
+host SSH client, SSH agent, display, D-Bus, or keyring is mounted, and no port
+is published. Google account login, token reuse, and `/logout` must be verified
+with an actual account; see the validation record for current coverage.
+
+Account tokens and other state persist in the selected home. **They are
+protected only by Unix permissions, not by a passphrase**, as in the other
+wrappers: keep the directory private and protect its backups. State creation,
+physical path resolution, ownership, access, and permission checks complete
+after engine verification and before image inspection or build, including
+explicit rebuilds. A new state directory can therefore remain after a later
+image failure. The wrapper scopes its private creation umask to state directory
+creation; this does not set the container process umask. Newly created
+directories use user-only permissions; existing directory permissions are not
+changed recursively. The state directory must belong to the caller and deny
 group/other access. Startup fails if it is not private; run `chmod 700` on an
 existing directory or select native Linux storage if the filesystem ignores
-Unix permissions (for example, some WSL Windows drive mounts). The keyring uses passphrase protection; application
-profiles and other state follow Google's native storage behavior. Do not
-assume every file in this directory is encrypted. `/logout` uses the CLI's
-native account logout behavior. Removing a container does not remove its
-persistent state.
+Unix permissions (for example, some WSL Windows drive mounts). `/logout` uses
+the CLI's native account logout behavior. Removing a container does not remove
+its persistent state.
 
 For automation without a terminal, select the native API key provider. Open
 the dedicated settings file and merge this setting into its JSON object:
@@ -224,11 +303,12 @@ Export `GEMINI_API_KEY` in the calling shell, then run:
 agy -p "Describe this repository" --print-timeout 60s
 ```
 
-The wrapper forwards an existing key by name without printing it or reading
-host credential files. A key alone does not select the provider. Missing keys
-produce native CLI diagnostics. Session-only `--settings` provider selection
-is also recognized by the entrypoint. Removing `modelProvider` restores account
-sign-in. ADC and enterprise setup are outside this version's scope.
+The wrapper forwards an existing key by name, in unrestricted mode and with the
+`gemini-api` profile, without printing it or reading host credential files. A
+key alone does not select the provider. Missing keys produce native CLI
+diagnostics. Session-only `--settings` provider selection also works. Removing
+`modelProvider` restores account sign-in. ADC, Vertex AI and enterprise setup
+are outside this version's scope.
 
 ## Permissions
 
@@ -289,6 +369,11 @@ available, and the outer container still enforces its existing mount,
 identity, and read-only root filesystem boundaries. YOLO remains a separate
 choice about native approvals.
 
+In restricted modes the guard's filter and the dropped capabilities also stop
+Bubblewrap from creating namespaces (`Failed to make / slave: Operation not
+permitted`). Commands still run inside the guarded container, which is the
+boundary; the guard is never relaxed for the internal sandbox.
+
 This finding applies to the tested versions and environment. Recheck internal
 sandbox compatibility after relevant CLI or engine updates; see the evidence
 and accepted limitation in [docs/validation.md](docs/validation.md).
@@ -335,8 +420,8 @@ tmpfs storage provisioned explicitly with automatic read-only tmpfs mounts
 disabled. `/tmp` allows execution for native runtime components and has a
 512 MiB limit; `/var/tmp` uses `noexec` with a separate 512 MiB limit; `/run`
 uses `noexec` with a 32 MiB limit. All three use `nosuid,nodev`, writable mode
-`1777`, and disappear with the container. The keyring runtime subdirectory
-inside `/tmp` remains private with mode `0700`. No full host home, host OpenSpec
+`1777`, and disappear with the container. Restricted sessions also mount the
+guard and its session inputs read-only. No full host home, host OpenSpec
 settings, host certificates, or SSH configuration is mounted automatically.
 
 Each session reserves a workspace-index name. Creation records the full owned
@@ -363,12 +448,9 @@ owned ID and remove it manually once the engine is reachable. Temporary
 creation output and ownership bookkeeping are removed on handled exits.
 SIGKILL, engine loss, or host failure can leave residual containers. An
 uninterruptible kernel task is outside a userspace timing guarantee.
-Separate state directories provide separate authentication profiles. An account
-session holds an exclusive lock on its keyring directory to prevent independent
-daemons from overwriting a shared collection. Another account session using
-that state fails with an actionable message; choose a different
-`ANTIGRAVITY_CONTAINER_STATE_DIR` for concurrent account sessions. Shell sessions
-and the API provider do not acquire this keyring lock.
+Separate state directories provide separate authentication profiles.
+Concurrent sessions may share one state directory; `agy` writes its
+configuration files atomically.
 
 The wrapper can itself run inside a container connected to the same Linux host
 through a local Unix Podman socket. Its workspace and state paths must also
@@ -418,8 +500,17 @@ deliberately; the wrapper then prints a warning.
 
 | Variable | Default |
 | --- | --- |
+| `ANTIGRAVITY_CONTAINER_NETWORK` | required: `offline`, `provider` or `unrestricted` |
+| `ANTIGRAVITY_CONTAINER_NETWORK_PROFILE` | provider only: `google-account` or `gemini-api` |
+| `ANTIGRAVITY_CONTAINER_NETWORK_POLICY` | provider only: absolute policy path |
+| `ANTIGRAVITY_CONTAINER_NETWORK_RUNTIME_DIR` | provider only: private native directory |
+| `ANTIGRAVITY_CONTAINER_EGRESS_IMAGE` | provider only: immutable proxy image ID or digest |
+| `ANTIGRAVITY_CONTAINER_MAINTENANCE` | disabled; exact `1` authorizes builds and proxy pulls |
 | `ANTIGRAVITY_CONTAINER_IMAGE` | `localhost/antigravity-cli:latest` |
-| `ANTIGRAVITY_CONTAINER_STATE_DIR` | `${HOME}/.local/share/antigravity-container/home` |
+| `ANTIGRAVITY_CONTAINER_STATE_DIR` | unset: `${HOME}/.local/share/antigravity-container/home`; empty: shared `~/.gemini` |
+| `ANTIGRAVITY_CONTAINER_CONFIG_DIR` | `~/.gemini` with shared state; the session always sees `/antigravity-home/.gemini` |
+| `ANTIGRAVITY_CONTAINER_TRUST_HOST_CA` | disabled; `1`, `true` or `yes` mounts one host CA bundle read-only |
+| `ANTIGRAVITY_CONTAINER_CA_BUNDLE` | first of `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt` |
 | `ANTIGRAVITY_YOLO` | disabled |
 | `ANTIGRAVITY_CONTAINER_PODMAN` | disabled |
 | `ANTIGRAVITY_CONTAINER_PODMAN_SOCKET` | `${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock` |
@@ -431,8 +522,9 @@ deliberately; the wrapper then prints a warning.
 
 When the wrapper already uses a local Unix `CONTAINER_HOST`, that accessible
 socket is the default service endpoint instead. An explicit
-`ANTIGRAVITY_CONTAINER_PODMAN_SOCKET` takes precedence. `GEMINI_API_KEY` and
-terminal `TERM` are the only caller variables explicitly forwarded by name;
+`ANTIGRAVITY_CONTAINER_PODMAN_SOCKET` takes precedence. `GEMINI_API_KEY` (by
+mode, see [Network modes](#network-modes)) and terminal `TERM` are the only
+caller variables explicitly forwarded by name;
 the entire environment and `.env` files are not imported by the wrapper.
 `EDITOR` and `VISUAL` use the included nano editor.
 
@@ -447,12 +539,14 @@ URL and SHA-512 come from Google's platform manifest and are pinned in
 `Containerfile` (`AGY_VERSION`, `AGY_URL_*`, `AGY_SHA512_*`). OpenSpec is pinned
 by `OPENSPEC_VERSION`. Other architectures fail the build explicitly.
 `tests/test_image_pins.py` rejects floating inputs. No npm Antigravity substitute,
-graphical IDE, Python SDK, or browser is installed.
+graphical IDE, Python SDK, browser, D-Bus daemon or keyring is installed. The
+image also contains `network/relay.py` and `network/mux.py` at
+`/opt/sandbox-egress/` for restricted sessions; the guard is never part of
+the image.
 
 | Group | Packages/tools | Purpose |
 | --- | --- | --- |
-| Download/ABI | bash, ca-certificates, curl, coreutils, sed, grep, tar, gzip, libc6, libstdc++6, libgcc-s1 | Artifact download and checksum, HTTPS, archive extraction, native compatibility |
-| Local credentials | dbus, gnome-keyring, libsecret-1-0, libsecret-tools | Linux Secret Service and credential checks without host services |
+| Download/ABI | bash, ca-certificates, openssl, curl, coreutils, sed, grep, tar, gzip, libc6, libstdc++6, libgcc-s1 | Artifact download and checksum, HTTPS, archive extraction, native compatibility |
 | Workflow additions | Node 22/npm, `@fission-ai/openspec`, python3, bubblewrap, podman | Reference-project workflow tools; Bubblewrap is not claimed as a Google CLI requirement |
 | Repository additions | git, ripgrep, findutils, diffutils, patch, gawk, nano, less, jq | Local Git, searching, editing, and JSON settings |
 | Archive/diagnostic additions | bzip2, xz-utils, zip, unzip, file, procps, util-linux | Archive support, ABI/process checks, and local diagnostics |
@@ -472,9 +566,8 @@ Sources: [Google quickstart](https://antigravity.google/docs/getting-started?tab
 ## Image build context
 
 `.containerignore` denies local build inputs by default. Only the root-level
-`Containerfile`, `container-entrypoint.sh`, `keyring-session.sh`, and
-`.containerignore` are allowed. The recipe still copies both executable runtime
-helpers. Unknown files, local configuration or credentials, state, and nested
+`Containerfile`, `container-entrypoint.sh` and `.containerignore`, plus
+`network/relay.py` and `network/mux.py`, are allowed. Unknown files, local configuration or credentials, state, and nested
 directories stay excluded, including nested files with an allowed basename.
 These rules apply independently of `.gitignore` and whether a file is tracked.
 
@@ -490,12 +583,13 @@ image and explicitly rebuild:
 
 ```bash
 podman tag localhost/antigravity-cli:latest localhost/antigravity-cli:previous
-agy --container-build --version
+ANTIGRAVITY_CONTAINER_MAINTENANCE=1 agy --container-build --version
 # Roll back the executable and toolchain:
 ANTIGRAVITY_CONTAINER_IMAGE=localhost/antigravity-cli:previous agy --version
 ```
 
-An absent image is built automatically. Explicit builds use `--no-cache`, so
+An absent image is built only with `ANTIGRAVITY_CONTAINER_MAINTENANCE=1`.
+Explicit builds use `--no-cache`, so
 they download the recorded artifacts again and verify their checksums. The
 build prints CLI and OpenSpec versions and binary architecture. It installs the
 recorded `agy` release, not the latest published one; Debian packages are not
@@ -511,32 +605,36 @@ pinned, so builds are not bit-for-bit reproducible.
    `docker.io/library/node:22-bookworm-slim`) in `Containerfile`.
 3. Rebuild with `--container-build` and check `agy --version` and
    `openspec --version`.
-4. Rerun the credential-free suites and `bash tests/run-runtime.sh`, including
-   the keyring checks, and verify account login manually.
+4. Update `tested.cli` in `agent/policies/default.json` to the same version
+   (`tests/test_image_pins.py` checks it), remeasure the Google hosts, rerun
+   the credential-free suites and every `bash tests/run-runtime.sh` mode, and
+   requalify. Verify account login manually.
 5. Record the tested versions and results with the date in `docs/validation.md`.
 State persists across image updates; back it up separately if you need to
 restore application data as well as the executable.
 
 ## Verification
 
-Run wrapper tests using standard-library Python on the host or in a suitable
-container:
+Run the checks in the runner, which uses the `agy` image and native volume
+storage (a noexec `/tmp` or a Windows drive cannot hold the test fixtures):
 
 ```bash
-python3 -m unittest discover -s tests -p test_wrapper.py -v
-python3 -m unittest discover -s tests -p test_image_pins.py -v
-ANTIGRAVITY_RUNTIME_TESTS=1 python3 -m unittest discover -s tests -p test_runtime.py -v
-# On filesystems without Unix permissions, or without host Python:
-bash tests/run-runtime.sh
+bash tests/run-runtime.sh --wrapper        # wrapper behavior with a fake engine
+bash tests/run-runtime.sh --shared         # shared suites and per-agent unit tests
+bash tests/run-runtime.sh --guard          # guard runtime (also --guard-idle)
+bash tests/run-runtime.sh --qualification  # local qualification
+bash tests/run-runtime.sh --network        # offline and provider acceptance
+bash tests/run-runtime.sh                  # unrestricted runtime suite
 ```
 
-The second command uses real rootless Podman and temporary directories under
-`.test-state/`, exercising image checks, mount boundaries, ownership,
-worktrees, child containers, keyring persistence under the session hardening,
-zero capabilities and no-new-privileges, effective cgroup v2 budgets and
-process-limit enforcement, the lifetime limit, the refused home workspace, and
-native startup diagnostics.
-It uses only dummy secrets and does not complete Google account authentication
-or submit paid model requests. Manual OAuth and model-request results, the
-known internal sandbox incompatibility, and outstanding architecture/SELinux
-checks are recorded in [docs/validation.md](docs/validation.md).
+`--network-feasibility`, `--network-policy` and `--mux` run single suites. The
+runtime suites use real rootless Podman with temporary directories, exercising
+image checks, mount boundaries, ownership, worktrees, child containers, the
+absence of a bus or keyring, zero capabilities and no-new-privileges, effective
+cgroup v2 budgets, the lifetime limit, the refused home workspace, the guard,
+the proxy, TLS binding, CA trust, cleanup and a real `agy` tool call against a
+synthetic Gemini endpoint. They use only dummy secrets and do not complete
+Google account authentication or submit paid model requests. Manual OAuth and
+model-request results, the known internal sandbox incompatibility, and
+outstanding architecture/SELinux checks are recorded in
+[docs/validation.md](docs/validation.md).

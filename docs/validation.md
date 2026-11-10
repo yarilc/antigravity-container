@@ -385,3 +385,74 @@ binding (Wave 3).
 
 Operator check, 2026-11-09: authenticated account login with agy 1.5.3 on the
 hardened, pinned image succeeded.
+
+## Network egress port (`add-network-egress`): 2026-11-10
+
+Target: WSL2 kernel 6.6.87.2, Landlock ABI 3, rootless Podman client 4.3.1 and
+server 4.9.3 with Netavark. Shared files at `claude-container` `sandbox-ref-8`
+(commit `12cffab`). The guard was packaged from the reference toolchain
+(`localhost/antigravity-guard-toolchain:development`, `0b69ba43c894…`). Its
+SHA-256 `0c647dfea75667a46a8cd4cc4dfea4ee3d10363752ea7ce5957162bacd6d7ec9`
+equals the guard of the other wrappers. The proxy image
+`localhost/antigravity-egress:local` is `13adbfafd7bd…`, the same agent-neutral
+image.
+
+### Keyring decision
+
+The guard denies new Unix sockets and listeners, so the private D-Bus session
+and GNOME keyring cannot work in restricted modes. On 2026-11-10 the operator
+chose `agy`'s file token storage in every mode and the removal of the keyring.
+The measurements below confirm the fallback without a bus.
+
+### Measured `agy` 1.5.3 behavior
+
+Image `ec5d5f1df09e` (before this change) and `8084f5fea2ba` (after), with
+dummy credentials only:
+
+| Check | Result |
+| --- | --- |
+| Token storage | `agy` logs `Using file-based token storage because SSH session detected` (with the sign-in marker) or `because no D-Bus session bus detected` (under the guard). It reads `~/.gemini/antigravity-cli/antigravity-oauth-token` (traced with `strace`). Plugin secrets and the user scope live in `~/.config/antigravity/` |
+| Sign-in without a bus | The TUI offers Google OAuth; the URL/code flow reached the code prompt with no keyring prompt. The authorization URL uses `accounts.google.com` with redirect `https://antigravity.google/oauth-callback` |
+| Concurrent sessions on one state | Two concurrent `agy -p` sessions left valid configuration JSON; `agy` writes it with a temporary file and rename. Concurrent token refresh needs a real account and is part of the operator checks |
+| Hosts, logging proxy | Account mode without a token: only `CONNECT play.googleapis.com:443` (telemetry). Gemini API mode: `generativelanguage.googleapis.com:443` plus telemetry. `strace` showed no direct connection besides the proxy |
+| Account hosts (static) | Token endpoint `https://oauth2.googleapis.com/token`, model service `https://cloudcode-pa.googleapis.com`; `www.googleapis.com` (user information) is excluded. A synthetic token file was not accepted (the stored token also records the authentication method), so post-sign-in hosts remain an operator check |
+| Telemetry and update | `AGY_CLI_DISABLE_AUTO_UPDATE=true` logged as honored. Telemetry to `play.googleapis.com/log` continued with `telemetryEnabled: false`; no environment control was found. The proxy denies it |
+| Proxy and CA | `HTTPS_PROXY` honored. With a synthetic CA: no trust gave `x509: certificate signed by unknown authority`; `SSL_CERT_FILE` with the bundle reached the fixture; `AGY_CA_CERT` alone did not |
+| Under the guard (offline) | `enforced revision=abi3-seccomp-mux-v1 abi=3`. `agy --version` 1.5.3. `agy -p` against a loopback Gemini stub (`GOOGLE_GEMINI_BASE_URL`) streamed `fixture-done`. With `--dangerously-skip-permissions`, a `run_command` tool call wrote a sentinel owned by UID 1000. The language server listened on loopback TCP. The TUI rendered and exited 0 after two Ctrl+C |
+| Denied under the guard | A Unix listener (`PermissionError`); Bubblewrap (`Failed to make / slave: Operation not permitted`). `agy`'s only Unix-socket use was a connection attempt to the absent `/var/run/nscd/socket` |
+| Layout | The guard accepted the dedicated home, exec `/tmp`, noexec `/run` and `/var/tmp` (mode `1777`), and a shared `.gemini` bind below a mode-`1777` tmpfs home (a mode-`0700` tmpfs home blocked traversal) |
+
+### Results
+
+Runtime image after the change: `localhost/antigravity-cli:latest`
+`8084f5fea2ba…` (`agy` 1.5.3; `relay.py` and `mux.py` match `network/` by
+SHA-256; no `dbus-daemon`, `gnome-keyring-daemon` or `secret-tool`).
+
+| Check | Result |
+| --- | --- |
+| `bash -n`, ShellCheck | Passed, no findings |
+| `tests/test_reference_copy.py` | Passed; fails on an injected byte change and an injected identifier |
+| `--wrapper` | Passed: 61 tests. First run: 7 expected failures from the new maintenance gate, the D-Bus `--unsetenv` and the state-resolution message; tests and the build-status propagation were updated |
+| `--shared` | Passed: 138 tests, 27 skipped (run by the modes) |
+| `--guard`, `--guard-idle` | Passed: 19 tests (1 skipped) and 1 test. Before `tests/test_network_runtime.py` existed, the three guarded TLS cases could not import it |
+| `--network-feasibility`, `--network-policy`, `--mux` | Passed: 1, 14 and 26 tests |
+| `--qualification` | Passed: 18 tests (before the wrapper integration: 6 expected failures) |
+| `--network` (offline, provider, TLS fixture, CA off and on, budgets, concurrency, cleanup, real `agy` tool call through the relay, TUI) | Passed: 21 tests |
+| default (unrestricted runtime suite) | Passed: 16 tests, including the five-file build context, image smoke, no bus and file token storage. A first run failed because the runner mounted the project read-only; the default mode now mounts it read-write, as before |
+| `openspec validate add-network-egress --strict`, `git diff --check` | Valid, clean |
+| markdownlint | No findings except MD013 (line length), which the existing README already had; the repository has no markdownlint configuration |
+
+The provider acceptance ran `agy --dangerously-skip-permissions -p` with a
+synthetic key under `controlled-gemini-api`: the request to
+`generativelanguage.googleapis.com` went through the relay and the production
+proxy to the TLS fixture, trusted through the host CA bundle; the returned
+`run_command` call wrote the workspace sentinel, and the second turn returned
+`fixture-tool-complete`.
+
+No container, network or volume labeled `io.antigravity-container` remained
+after the runs; pre-existing containers were untouched.
+
+Operator-run authenticated checks (Google account sign-in, token reuse and
+refresh, model requests and `/logout` under `google-account`; Gemini API-key
+requests under `gemini-api`) are pending until all Waves are complete. They
+also decide whether `google-account` needs another host.

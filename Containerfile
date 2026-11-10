@@ -19,9 +19,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
-        bash bubblewrap bzip2 ca-certificates coreutils curl dbus diffutils \
-        file findutils gawk git gnome-keyring grep gzip jq less libc6 \
-        libgcc-s1 libsecret-1-0 libsecret-tools libstdc++6 nano patch podman \
+        bash bubblewrap bzip2 ca-certificates coreutils curl diffutils \
+        file findutils gawk git grep gzip jq less libc6 \
+        libgcc-s1 libstdc++6 nano openssl patch podman \
         procps python3 ripgrep sed tar unzip util-linux xz-utils zip \
     && npm install --global --omit=dev "@fission-ai/openspec@${OPENSPEC_VERSION}" \
     && printf '\nunset historylog\n' >> /etc/nanorc \
@@ -49,8 +49,11 @@ RUN case "$(uname -m)" in \
     && openspec --version
 
 COPY container-entrypoint.sh /usr/local/bin/antigravity-entrypoint
-COPY keyring-session.sh /usr/local/lib/antigravity/keyring-session.sh
-RUN chmod 755 /usr/local/bin/antigravity-entrypoint /usr/local/lib/antigravity/keyring-session.sh
+# The loopback relay and its multiplex module run inside restricted sessions; the
+# guard itself is never part of the image.
+COPY network/relay.py network/mux.py /opt/sandbox-egress/
+RUN chmod 755 /usr/local/bin/antigravity-entrypoint \
+    && chmod 644 /opt/sandbox-egress/relay.py /opt/sandbox-egress/mux.py
 
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/antigravity-entrypoint"]

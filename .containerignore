@@ -1,6 +1,7 @@
-# Only deliberate root-level image inputs belong in the build context.
+# Only deliberate image inputs belong in the build context.
 **
 !Containerfile
 !container-entrypoint.sh
-!keyring-session.sh
 !.containerignore
+!network/relay.py
+!network/mux.py

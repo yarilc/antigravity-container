@@ -7,7 +7,7 @@ Allow users to run Antigravity CLI through a local wrapper with a predictable li
 ## Requirements
 
 ### Requirement: Transparent wrapper interface
-`antigravity-container.sh` SHALL handle `--container-build`, `--container-shell`, `--container-git-worktree`, and `--container-help`, forwarding every other argument to `agy` while preserving order, spaces, and empty values.
+`antigravity-container.sh` SHALL handle `--container-build`, `--container-shell`, `--container-git-worktree`, `--container-qualify`, the internal `--container-qualify-probe` and `--container-help`, forwarding every other argument to `agy` while preserving order, spaces, and empty values. Wrapper help SHALL describe the network contract.
 
 #### Scenario: Normal CLI arguments
 - **WHEN** the wrapper receives `--help`, a prompt containing spaces, or empty arguments
@@ -19,7 +19,12 @@ Allow users to run Antigravity CLI through a local wrapper with a predictable li
 
 #### Scenario: Shell mode
 - **WHEN** `--container-shell` is requested
-- **THEN** Bash opens with the same mounts and identity without starting `agy` or applying the YOLO flag to the shell
+- **THEN** Bash opens with the same mounts, identity and network mode without starting `agy` or applying the YOLO flag to the shell
+
+#### Scenario: Help describes the network contract
+- **WHEN** wrapper help is requested
+- **THEN** it names `ANTIGRAVITY_CONTAINER_NETWORK` with its three values, `ANTIGRAVITY_CONTAINER_MAINTENANCE`, the profile, policy, runtime-directory, egress-image, configuration-directory and CA variables, and `--container-qualify`
+- **AND** it states the residual exfiltration limit of provider mode and the removal of the keyring
 
 ### Requirement: Rootless lifecycle and identity
 The wrapper SHALL use rootless Podman with the caller's UID/GID, remove the container on termination, and use distinct workspace-based names. It SHALL preserve the exit code and allow process interruption.
@@ -33,11 +38,19 @@ The wrapper SHALL use rootless Podman with the caller's UID/GID, remove the cont
 - **THEN** they use distinct names without interrupting active sessions
 
 ### Requirement: Build and invocation preconditions
-The wrapper SHALL use `ANTIGRAVITY_CONTAINER_IMAGE` with default `localhost/antigravity-cli:latest`, build the image if absent, and force a rebuild with `--container-build`. It SHALL diagnose missing prerequisites before launch.
+The wrapper SHALL use `ANTIGRAVITY_CONTAINER_IMAGE` with default `localhost/antigravity-cli:latest`. It SHALL build the image only when absent (image-existence status 1) or when `--container-build` forces a rebuild, and every build SHALL require the exact `ANTIGRAVITY_CONTAINER_MAINTENANCE=1`. Other image-existence errors SHALL stop startup. It SHALL diagnose missing prerequisites before launch.
 
 #### Scenario: Image absent
-- **WHEN** the selected image does not exist
+- **WHEN** the selected image does not exist and maintenance is authorized
 - **THEN** it is built from the Containerfile alongside the wrapper, even when the current directory is an external project
+
+#### Scenario: Build without maintenance authorization
+- **WHEN** the image is absent or `--container-build` is requested and `ANTIGRAVITY_CONTAINER_MAINTENANCE` differs from exactly `1`
+- **THEN** the wrapper exits nonzero naming the variable, without building, pulling or creating a session
+
+#### Scenario: Image inspection fails
+- **WHEN** image existence returns an error other than 1
+- **THEN** startup fails without attempting a build or session creation
 
 #### Scenario: Runtime unavailable
 - **WHEN** Podman is absent, uses an unsupported remote context, or is not rootless
@@ -89,7 +102,7 @@ The wrapper SHALL reject named remote connections, TCP/SSH launch transports, an
 - **THEN** endpoint validation allows the existing engine verification to proceed
 
 ### Requirement: Private state preflight before image operations
-The wrapper SHALL complete private state creation, physical path resolution, ownership, accessibility, and mode validation before image inspection or build, including explicit rebuilds. Invalid state SHALL prevent image operations. Wrapper help SHALL remain free of engine and state side effects.
+The wrapper SHALL check the selected state lexically before engine queries, then complete private state creation, physical path resolution, ownership, accessibility, and mode validation after engine verification and before image inspection or build, including explicit rebuilds. Invalid state SHALL prevent image operations. Wrapper help SHALL remain free of engine and state side effects.
 
 #### Scenario: Invalid existing state
 - **WHEN** state is inaccessible, belongs to another user, allows group/other access, or cannot be resolved
@@ -98,6 +111,10 @@ The wrapper SHALL complete private state creation, physical path resolution, own
 #### Scenario: State creation fails
 - **WHEN** the selected state directory cannot be created
 - **THEN** startup fails before image operations
+
+#### Scenario: Engine query fails
+- **WHEN** a missing state directory is selected and the engine query fails
+- **THEN** the wrapper exits without creating the directory
 
 #### Scenario: Later image failure
 - **WHEN** state preflight succeeds but image inspection or build fails
@@ -191,3 +208,14 @@ The wrapper SHALL check for coreutils `timeout` before session creation and docu
 #### Scenario: Invalid lifetime value
 - **WHEN** `ANTIGRAVITY_CONTAINER_RUN_TIMEOUT` is negative, fractional or non-numeric
 - **THEN** the wrapper exits with status 1 and names the variable before any engine query or state creation
+
+### Requirement: Restricted forwarding and secret controls
+Secret values SHALL NOT appear in wrapper-generated argv or diagnostics. Offline and provider modes SHALL forward no host proxy or CA variable and only the profile's credential. Unrestricted mode SHALL keep today's forwarding.
+
+#### Scenario: Restricted forwarding
+- **WHEN** offline or provider mode runs with `HTTPS_PROXY`, `no_proxy`, `SSL_CERT_FILE` and `GEMINI_API_KEY` set on the host
+- **THEN** none of the host proxy or CA values reaches the session, offline forwards no key, and provider forwards `GEMINI_API_KEY` only with `gemini-api`
+
+#### Scenario: Secret values stay out of argv
+- **WHEN** a session forwards a dummy `GEMINI_API_KEY`
+- **THEN** recorded engine arguments contain the variable name without its value
