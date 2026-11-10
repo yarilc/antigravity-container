@@ -7,7 +7,7 @@ Make Antigravity CLI login usable in a container without a host desktop, keeping
 ## Requirements
 
 ### Requirement: Desktop independent account login
-The container SHALL support Google's remote authentication flow with a URL and manual code. It SHALL start no D-Bus session, Secret Service or keyring, in any network mode, so that `agy` uses its file token storage. It SHALL avoid dependencies on the host browser, bus and keyring, and SHALL add no port, host-network or Unix-socket exception for sign-in.
+The container SHALL support Google's remote authentication flow with a URL and manual code. It SHALL start no D-Bus session, Secret Service or keyring, in any network mode, so that `agy` uses its file token storage. It SHALL avoid dependencies on the host browser, bus and keyring, and SHALL add no port, host-network or Unix-socket exception for sign-in. Guided setup SHALL be able to start this sign-in through the installed wrapper.
 
 #### Scenario: First interactive login
 - **WHEN** a user starts the CLI with empty state in a terminal without a host display or desktop services
@@ -20,6 +20,11 @@ The container SHALL support Google's remote authentication flow with a URL and m
 #### Scenario: Sign-in in provider mode
 - **WHEN** a user signs in under the `google-account` profile in provider mode
 - **THEN** token exchange reaches only the profile's hosts through the relay, and the browser step stays on the host
+
+#### Scenario: Sign-in started from setup
+- **WHEN** the operator selects the `account` method in `--container-setup` and accepts the sign-in offer
+- **THEN** the installed wrapper starts `agy` interactively with the saved mode and policies, and the operator completes the URL and code flow there
+- **AND** the tokens are stored in the selected state as for any other interactive sign-in
 
 ### Requirement: Persistent credentials and logout
 The container SHALL retain `agy` account tokens and authentication profiles as files in the selected persistent state with access limited to the user. Documentation SHALL state that these files are protected only by Unix permissions, not by a passphrase, and SHALL respect the CLI's native logout behavior. Keyring files from earlier versions SHALL be left in place, unused, with removal guidance.

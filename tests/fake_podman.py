@@ -134,6 +134,8 @@ elif args[0] == 'start':
         pathlib.Path(str(log) + '.started').touch()
         while True:
             time.sleep(0.05)
+    if os.environ.get('FAKE_START_STDERR'):
+        sys.stderr.write(os.environ['FAKE_START_STDERR']); sys.stderr.flush()
     if not os.environ.get('FAKE_NO_STDIN'):
         print('stdin:' + sys.stdin.read())
     sys.exit(int(os.environ.get('FAKE_EXIT', '0')))

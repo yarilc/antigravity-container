@@ -6,6 +6,15 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Guided setup (`add-container-setup`): `--container-setup` prepares images,
+  guard and a protected installation with a managed launcher at
+  `~/.local/bin/antigravity-container`, qualifies restricted modes and runs a
+  smoke check. For the `account` method it offers sign-in inside the interactive
+  `agy` (empty `login_args`, `claude-container` tag `sandbox-ref-9`).
+- `docs/setup.md`, the shared `tests/test_setup.py` and `tests/test_alignment.py`,
+  `tests/test_setup_runtime.py`, and the five-wrapper parity table.
+- The wrapper passes client stderr through the shared diagnostics filter.
+
 - Network modes (`add-network-egress`): `ANTIGRAVITY_CONTAINER_NETWORK` selects
   `offline`, `provider` (exact-destination egress proxy) or `unrestricted`.
   Restricted modes use the native guard, the multiplexed relay and the egress
@@ -22,6 +31,10 @@ All notable changes to this project are documented in this file.
   tests.
 
 ### Changed
+
+- A launch with no `ANTIGRAVITY_CONTAINER_NETWORK` now stops with
+  `setup required:` guidance naming `--container-setup`.
+- Shared files now come from `claude-container` tag `sandbox-ref-9`.
 
 - **BREAKING:** every launch requires an explicit
   `ANTIGRAVITY_CONTAINER_NETWORK`. Set `unrestricted` to keep the previous
