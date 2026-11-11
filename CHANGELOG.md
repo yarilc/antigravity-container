@@ -32,6 +32,9 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- Shared files now come from `claude-container` tag `sandbox-ref-10`: a failed
+  setup smoke check shows the wrapper's sanitized stderr, and setup refusals of
+  non-private directories name the reason and the `chmod 700` fix.
 - Account profile hosts (`add-daily-cloudcode-host`): `google-account` now
   also allows the hosts that the operator sessions of 2026-11-11 saw denied:
   `daily-cloudcode-pa.googleapis.com` (default Cloud Code URL of `agy` 1.5.3),
