@@ -613,3 +613,17 @@ wrapper's sanitized stderr.
 
 A first run of all wrappers' suites was interrupted by a host crash. Its
 leftover test containers were removed before this run.
+
+## Operator authenticated session: 2026-11-11
+
+The operator ran an authenticated Antigravity session in provider mode with the
+setup-default profile `google-account`. In the TUI, they asked the model to confirm
+that it could use the harness tools and to report the sandbox's access limits.
+The model did both, and the operator found the result correct.
+
+The session ran on policy `antigravity-2026-11-11-v2`, after `add-daily-cloudcode-host` allowed the hosts that the first two sessions saw denied.
+
+This covers an authenticated model request with tool use through the sandbox.
+Token refresh, `/logout` and the `gemini-api` key checks remain pending. Full profile verification under the readiness checklist is not
+claimed. The checklist also covers streaming and long-lived requests,
+WebSockets, sign-in, token reuse and refresh, CA behavior and shell mode.
