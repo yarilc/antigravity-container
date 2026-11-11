@@ -295,7 +295,9 @@ class SetupRuntime(unittest.TestCase):
         # Operator-style provider run with the gemini method and no key set.
         code, output = self.setup_run('provider', method='gemini')
         self.assertEqual(code, 0, output)
-        for host in ('oauth2.googleapis.com', 'cloudcode-pa.googleapis.com', 'generativelanguage.googleapis.com'):
+        for host in ('oauth2.googleapis.com', 'cloudcode-pa.googleapis.com', 'daily-cloudcode-pa.googleapis.com',
+                     'www.googleapis.com', 'aicode.googleapis.com', 'www.gstatic.com', 'play.googleapis.com',
+                     'generativelanguage.googleapis.com'):
             self.assertIn(host, output)
         self.assertIn('Acknowledge that allowed provider hosts', output)
         self.assertIn('maintenance', output)

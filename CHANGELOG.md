@@ -32,6 +32,15 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- Account profile hosts (`add-daily-cloudcode-host`): `google-account` now
+  also allows the hosts that the operator sessions of 2026-11-11 saw denied:
+  `daily-cloudcode-pa.googleapis.com` (default Cloud Code URL of `agy` 1.5.3),
+  `www.googleapis.com` (user information), `aicode.googleapis.com`,
+  `www.gstatic.com` and `play.googleapis.com` (telemetry). Without them, the
+  eligibility check failed with `Bad Gateway`. Telemetry stays denied under
+  `gemini-api`, and the sandbox Cloud Code variants stay denied. Policy
+  revision `antigravity-2026-11-11-v2`: existing installations must rerun
+  `--container-setup` or `--container-qualify`.
 - A launch with no `ANTIGRAVITY_CONTAINER_NETWORK` now stops with
   `setup required:` guidance naming `--container-setup`.
 - Shared files now come from `claude-container` tag `sandbox-ref-9`.

@@ -511,3 +511,83 @@ The shared setup notice refers to a "Residual exfiltration" section of
 lack that section (a documentation gap for Wave 4).
 
 Operator-run authenticated checks remain pending until all Waves are complete.
+
+## Account profile hosts (`add-daily-cloudcode-host`): 2026-11-11
+
+### Operator sessions (google-account)
+
+In both sessions the operator signed in with a Google account in provider mode,
+and the banner showed the account e-mail. The eligibility check then failed with
+`Bad Gateway`, which the relay returns for every policy denial. The client
+reports one failure at a time, so the sanitized denial logs are the complete
+evidence. They contained only `policy-denied` entries, plus a final
+`transport-closed` entry.
+
+1. **Session `session.EPGcuRaMkTsB`**, policy `antigravity-2026-11-10-v1`.
+   Failure: `Post "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"`.
+2. **Session `session.9TeqMf00VuXH`**, policy `antigravity-2026-11-11-v1`, with
+   `daily-cloudcode-pa` allowed. The banner also showed the selected model
+   (`Gemini 4 Argon (Medium)`). Failure:
+   `Get "https://www.googleapis.com/oauth2/v2/userinfo"`.
+
+| Host | Denials (session 1 / 2) | Decision |
+| --- | --- | --- |
+| `daily-cloudcode-pa.googleapis.com:443` | 11 / allowed | Allowed (default Cloud Code URL) |
+| `www.googleapis.com:443` | 1 / 3 | Allowed (user information; general API host that also serves Drive) |
+| `aicode.googleapis.com:443` | 0 / 2 | Allowed |
+| `www.gstatic.com:443` | 0 / 2 | Allowed |
+| `play.googleapis.com:443` | 3 / 4 | Allowed under `google-account` only (telemetry) |
+
+The operator approved every host denied in these sessions. Under `gemini-api`,
+telemetry and all account hosts stay denied. The proxy logs denials only, so
+the logs cannot show whether `cloudcode-pa.googleapis.com` was used.
+
+### Offline binary scan (`agy` 1.5.3, `--network none`)
+
+- `https://daily-cloudcode-pa.googleapis.com` is embedded as the default Cloud
+  Code URL, next to the CLI flag help. `cloudcode-pa.googleapis.com` appears
+  five times.
+- Sandbox variants: `autopush-cloudcode-pa.sandbox.googleapis.com` and
+  `preprod-daily-cloudcode-pa.sandbox.googleapis.com`. Both stay denied.
+- Overrides: `CLOUD_CODE_URL`, `cloud_code_endpoint` and
+  `ForceUseCloudCodeAPI`. The wrapper neither sets nor forwards them.
+- `www.googleapis.com` paths: `oauth2/v2/userinfo`, `oauth2/v3/tokeninfo`, Drive.
+- `https://aicode.googleapis.com` sits next to `to get entitlement` and
+  `Making Gateway request to`, and the binary contains the
+  `https://www.googleapis.com/auth/aicode` OAuth scope.
+- `www.gstatic.com` is referenced as `www.gstatic.com/antigravity/web/...`
+  (scripts of the embedded web pages).
+
+### Test defect found
+
+The controlled TLS binding test passed the `google-account` hosts separated by
+spaces. The shared fixture reads one comma-separated argument, so only
+`oauth2.googleapis.com` was checked from `add-network-egress` onward. Codex,
+Claude, OpenCode and Pi already pass comma-separated hosts. The test now passes
+a comma-separated list and asserts that the fixture reports every host.
+
+### Test results
+
+| Check | Result |
+| --- | --- |
+| `bash -n`, ShellCheck | Passed, no findings |
+| `--network-policy` | Passed: 14 tests. `tested` values stay within the 120-character limit; the session details are kept here |
+| `--shared` (includes the exact base-profile check in `test_agent_profile`) | Passed: 148 tests, 27 skipped (run by the modes) |
+| `--wrapper` (help names all seven account hosts and the telemetry treatment) | Passed: 63 tests |
+| `--network` | Passed: 21 tests. Under `controlled-google-account`, TLS binding is asserted for all seven hosts, and the updater, `generativelanguage` and both sandbox variants are denied. Under `controlled-gemini-api`, telemetry and every account host are denied |
+| `--setup-runtime` (the provider notice lists all seven account hosts) | Passed: 5 tests |
+| `openspec validate add-daily-cloudcode-host --strict`, `git diff --check` | Valid, clean |
+| markdownlint | No new findings except MD013 (line length) |
+
+### Operator authenticated test (after the change)
+
+On 2026-11-11, after requalifying with policy `antigravity-2026-11-11-v2`, the
+operator reported that their authenticated `google-account` test passed. The
+report did not list the individual steps.
+
+Still open:
+
+- Gemini API-key requests under `gemini-api`.
+- Whether `cloudcode-pa.googleapis.com`, `aicode.googleapis.com` and
+  `www.gstatic.com` are needed. The proxy logs denials only, so a passing
+  session cannot show that a host went unused.

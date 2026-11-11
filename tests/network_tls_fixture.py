@@ -16,8 +16,11 @@ import proxy
 # A deterministic test resolver supplies only the policy's explicit loopback
 # exception. Production proxy resolution/address validation still runs in full.
 # Provider hosts, including denied optional ones, resolve to the local fixture.
-PROVIDER_HOSTS = ('oauth2.googleapis.com', 'cloudcode-pa.googleapis.com', 'generativelanguage.googleapis.com',
-                  'play.googleapis.com', 'www.googleapis.com', 'antigravity-cli-auto-updater-974169037036.us-central1.run.app')
+PROVIDER_HOSTS = ('oauth2.googleapis.com', 'cloudcode-pa.googleapis.com', 'daily-cloudcode-pa.googleapis.com',
+                  'generativelanguage.googleapis.com', 'play.googleapis.com', 'www.googleapis.com',
+                  'aicode.googleapis.com', 'www.gstatic.com',
+                  'autopush-cloudcode-pa.sandbox.googleapis.com', 'preprod-daily-cloudcode-pa.sandbox.googleapis.com',
+                  'antigravity-cli-auto-updater-974169037036.us-central1.run.app')
 original_resolver = socket.getaddrinfo
 def fixture_resolver(host, port, *args, **kwargs):
     return original_resolver('127.0.0.1' if host in ('localhost.localdomain', 'alternate.test', *PROVIDER_HOSTS) else host,

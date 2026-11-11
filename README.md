@@ -229,13 +229,15 @@ a private native `ANTIGRAVITY_CONTAINER_NETWORK_RUNTIME_DIR` and the immutable
 
 | Profile | Destinations | Credential |
 | --- | --- | --- |
-| `google-account` | `oauth2.googleapis.com:443`, `cloudcode-pa.googleapis.com:443` | account tokens in the state home |
+| `google-account` | `oauth2.googleapis.com:443`, `cloudcode-pa.googleapis.com:443`, `daily-cloudcode-pa.googleapis.com:443`, `www.googleapis.com:443`, `aicode.googleapis.com:443`, `www.gstatic.com:443`, `play.googleapis.com:443` | account tokens in the state home |
 | `gemini-api` | `generativelanguage.googleapis.com:443` | `GEMINI_API_KEY` |
 
 Restricted sessions receive no host proxy or CA variable; only `gemini-api`
 forwards `GEMINI_API_KEY`. `AGY_CLI_DISABLE_AUTO_UPDATE=true` is protected, and
-the proxy denies the update and telemetry hosts (`play.googleapis.com`; the
-`telemetryEnabled` setting does not stop it on 1.5.3).
+the proxy denies the update hosts. Telemetry (`play.googleapis.com`; the
+`telemetryEnabled` setting does not stop it on 1.5.3) is denied under
+`gemini-api` and allowed under `google-account`, which the operator sessions
+showed needs it.
 
 **Allowed services can receive data.** The proxy binds the TLS server name to
 the allowed host, but it cannot tell your credentials from an attacker's: an

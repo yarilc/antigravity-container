@@ -1,20 +1,25 @@
 {
   "schema_version": 1,
-  "revision": "antigravity-2026-11-10-v1",
-  "source_date": "2026-11-10",
+  "revision": "antigravity-2026-11-11-v2",
+  "source_date": "2026-11-11",
   "sources": [
     "https://antigravity.google/docs/cli/reference",
     "https://developers.google.com/identity/protocols/oauth2"
   ],
   "tested": {
-    "cli": "1.5.3 (version query; static endpoint inventory, logging-proxy runs and TLS fixture 2026-11-10)",
+    "cli": "1.5.3 (static inventory, logging proxy, TLS fixture 2026-11-10; operator account denial logs 2026-11-11)",
     "node": "22 (image base; agy is a native Go binary)",
-    "authentication": "unverified: operator Google account sign-in and refresh, and Gemini API-key requests not yet run"
+    "authentication": "partial: account sign-in and model selection 2026-11-11; model requests, refresh, Gemini key unverified"
   },
   "profiles": {
     "google-account": {"authentication": "account", "disable_optional_traffic": true,
       "destinations": [{"host": "oauth2.googleapis.com", "port": 443},
-                       {"host": "cloudcode-pa.googleapis.com", "port": 443}]},
+                       {"host": "cloudcode-pa.googleapis.com", "port": 443},
+                       {"host": "daily-cloudcode-pa.googleapis.com", "port": 443},
+                       {"host": "www.googleapis.com", "port": 443},
+                       {"host": "aicode.googleapis.com", "port": 443},
+                       {"host": "www.gstatic.com", "port": 443},
+                       {"host": "play.googleapis.com", "port": 443}]},
     "gemini-api": {"authentication": "gemini", "disable_optional_traffic": true,
       "destinations": [{"host": "generativelanguage.googleapis.com", "port": 443}]}
   }

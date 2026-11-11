@@ -124,16 +124,19 @@ active LSM policy requires the gate on each launch. Locally-qualified
 installations are distinguished from release-measured acceptance records.
 Restricted sessions receive no host proxy or CA variables; provider mode
 forwards GEMINI_API_KEY only with gemini-api, and offline forwards none.
-AGY_CLI_DISABLE_AUTO_UPDATE=true is set after forwarding; agy telemetry is
-denied by the proxy. Named Unix sockets and the Bubblewrap terminal sandbox
+AGY_CLI_DISABLE_AUTO_UPDATE=true is set after forwarding; agy telemetry
+(play.googleapis.com) is allowed only with google-account, where the account
+session uses it, and denied with gemini-api. Named Unix sockets and the Bubblewrap terminal sandbox
 are unavailable under the guard; the container is the boundary.
 Provider mode uses an external CONNECT proxy that binds the TLS server name
 (initial and retried ClientHello) to the CONNECT host before forwarding; it
 does not prove exclusive communication with your Google account or project.
 Allowed services can receive data: an injected agent can send workspace data
-to an allowed host (google-account: oauth2.googleapis.com and
-cloudcode-pa.googleapis.com; gemini-api: generativelanguage.googleapis.com)
-with an attacker's key or account. Only offline removes this. Provider-hosted
+to an allowed host (google-account: oauth2.googleapis.com,
+cloudcode-pa.googleapis.com, daily-cloudcode-pa.googleapis.com,
+www.googleapis.com, aicode.googleapis.com, www.gstatic.com and
+play.googleapis.com; gemini-api: generativelanguage.googleapis.com) with an
+attacker's key or account. Only offline removes this. Provider-hosted
 tools such as web search run at the provider, outside this boundary.
 See network/README.md and docs/network-contract.md.
 EOF

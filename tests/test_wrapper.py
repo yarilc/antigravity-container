@@ -976,7 +976,10 @@ class WrapperTests(unittest.TestCase):
                      'ANTIGRAVITY_CONTAINER_EGRESS_IMAGE', 'ANTIGRAVITY_CONTAINER_MAINTENANCE',
                      'ANTIGRAVITY_CONTAINER_CONFIG_DIR', 'ANTIGRAVITY_CONTAINER_TRUST_HOST_CA',
                      'ANTIGRAVITY_CONTAINER_CA_BUNDLE', 'no D-Bus session or keyring',
-                     'google-account: oauth2.googleapis.com', 'gemini-api: generativelanguage.googleapis.com',
+                     'google-account: oauth2.googleapis.com,', 'cloudcode-pa.googleapis.com,',
+                     'daily-cloudcode-pa.googleapis.com,', 'www.googleapis.com, aicode.googleapis.com,',
+                     'www.gstatic.com and', 'play.googleapis.com; gemini-api: generativelanguage.googleapis.com',
+                     'allowed only with google-account',
                      'Only offline removes this', 'outside this boundary', 'sign in again once',
                      '--container-setup', 'New users must first run'):
             self.assertIn(text, result.stdout)

@@ -37,7 +37,7 @@ Intentional differences are limited to per-agent files:
 | File | Antigravity value or behavior |
 | --- | --- |
 | `agent/profile.json` | Identity: `antigravity-container`, prefix `ANTIGRAVITY_CONTAINER`, labels `io.antigravity-container.*`. Images: `localhost/antigravity-cli`, `localhost/antigravity-egress`, `localhost/antigravity-guard-toolchain`. Runtime: home `/antigravity-home`, command `agy`. State: configuration `.gemini` with override `ANTIGRAVITY_CONTAINER_CONFIG_DIR`, no shared directories. Approval variable `ANTIGRAVITY_YOLO`. Methods `account` (`google-account`) and `gemini` (`gemini-api`). Installation file `container-entrypoint.sh` (`install.files`). The `account` method declares empty `login_args`: setup offers sign-in inside the interactive `agy` |
-| `agent/policies/default.json` | `google-account` and `gemini-api`, revision `antigravity-2026-11-10-v1` |
+| `agent/policies/default.json` | `google-account` and `gemini-api`, revision `antigravity-2026-11-11-v2` |
 | `antigravity-container.sh` | `agy` arguments and YOLO; three state choices (unset: dedicated home; path: isolated home; empty: shared `~/.gemini` below an ephemeral home); no D-Bus session; protected `AGY_CLI_DISABLE_AUTO_UPDATE=true`; `GEMINI_API_KEY` only with `gemini-api`; no host proxy or CA variables in restricted modes; `--container-setup`, the `setup required:` message and the stderr diagnostics filter |
 | `container-entrypoint.sh` | Help and version shortcut, scoped `SSH_CONNECTION` marker for the remote URL/code sign-in, `exec agy`; no keyring |
 | `Containerfile`, `.containerignore` | `agy` 1.5.3 from the pinned release artifact, no keyring packages; copies `network/relay.py` and `network/mux.py` |
@@ -89,15 +89,38 @@ The guard replaces the image entrypoint and then runs
 
 | Profile | Destinations | Credential | Status |
 | --- | --- | --- | --- |
-| `google-account` | `oauth2.googleapis.com:443`, `cloudcode-pa.googleapis.com:443` | Account tokens in `~/.gemini/antigravity-cli/antigravity-oauth-token` | Static inventory of 1.5.3 (token and model endpoints); real sign-in, refresh and requests unverified |
+| `google-account` | `oauth2.googleapis.com:443`, `cloudcode-pa.googleapis.com:443`, `daily-cloudcode-pa.googleapis.com:443`, `www.googleapis.com:443`, `aicode.googleapis.com:443`, `www.gstatic.com:443`, `play.googleapis.com:443` | Account tokens in `~/.gemini/antigravity-cli/antigravity-oauth-token` | Static inventory of 1.5.3, plus the hosts denied in two operator sessions (2026-11-11); operator authenticated test passed on `antigravity-2026-11-11-v2` (2026-11-11) |
 | `gemini-api` | `generativelanguage.googleapis.com:443` | `GEMINI_API_KEY` | Measured on 1.5.3 with a logging proxy; real key unverified |
 
 The browser step of sign-in (`accounts.google.com`, redirect to
 `antigravity.google`) runs on the host and has no container rule.
-`www.googleapis.com` (user information) is deliberately not allowed: it is a
-general API host. If the operator check shows that sign-in needs it, the
-profile changes in a separate decision. Vertex AI, enterprise and custom
-endpoints, ADC and other providers have no profile.
+The account hosts beyond the static inventory come from two operator-run
+sessions on 2026-11-11. In each, sign-in succeeded and the eligibility check
+then failed with `Bad Gateway`. The client reports only one failure at a time:
+
+1. `daily-cloudcode-pa.googleapis.com` (`loadCodeAssist`), the default Cloud
+   Code URL embedded in `agy` 1.5.3;
+2. `www.googleapis.com` (`oauth2/v2/userinfo`).
+
+Both sessions also logged denials of `aicode.googleapis.com`, `www.gstatic.com`
+and `play.googleapis.com`. The operator approved all of them. Two of these
+hosts widen the profile beyond the model service:
+
+- `www.googleapis.com` is a general API host that also serves Drive;
+- `play.googleapis.com` receives the client's telemetry. See the optional
+  traffic section below.
+
+`cloudcode-pa.googleapis.com` stays allowed provisionally: the proxy logs
+denials only, so whether `agy` uses it is not yet known.
+
+The sandbox Cloud Code variants `autopush-cloudcode-pa.sandbox.googleapis.com`
+and `preprod-daily-cloudcode-pa.sandbox.googleapis.com`, embedded in the
+binary, stay denied. The client's Cloud Code URL override is neither set nor
+forwarded, and if it is set in writable configuration, the policy still
+decides.
+
+Vertex AI, enterprise and custom endpoints, ADC and other providers have no
+profile.
 
 In provider mode only `gemini-api` forwards `GEMINI_API_KEY`; offline and
 `google-account` forward none. Unrestricted mode keeps forwarding
@@ -109,7 +132,9 @@ In provider mode only `gemini-api` forwards `GEMINI_API_KEY`; offline and
   auto-update is disabled.
 - Telemetry goes to `play.googleapis.com/log` even with the
   `telemetryEnabled: false` setting, and no environment control was found. The
-  proxy denies it in every profile.
+  proxy denies it under `gemini-api`. Under `google-account` it is allowed,
+  because the operator sessions of 2026-11-11 required it together with the
+  other account hosts. There, the account's telemetry reaches Google.
 - `agy` honors `HTTPS_PROXY` for model, OAuth and telemetry requests; no direct
   connection was observed.
 - `agy` trusts the host CA bundle through `SSL_CERT_FILE`; `AGY_CA_CERT` alone
@@ -142,8 +167,13 @@ In provider mode only `gemini-api` forwards `GEMINI_API_KEY`; offline and
 Destination and SNI binding cannot tell the operator's credentials from
 attacker-supplied ones. A prompt-injected agent can therefore send workspace
 data to every allowed host of the selected profile with a foreign Gemini API key
-or Google account: `oauth2.googleapis.com` and `cloudcode-pa.googleapis.com`
-for `google-account`, `generativelanguage.googleapis.com` for `gemini-api`.
+or Google account:
+
+- `google-account`: `oauth2.googleapis.com`, `cloudcode-pa.googleapis.com`,
+  `daily-cloudcode-pa.googleapis.com`, `www.googleapis.com`,
+  `aicode.googleapis.com`, `www.gstatic.com` and `play.googleapis.com`;
+- `gemini-api`: `generativelanguage.googleapis.com`.
+
 Reducing the host list does not remove this channel; only `offline` does. Setup
 shows this notice and requires its acknowledgement whenever provider mode is
 selected.

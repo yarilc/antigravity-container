@@ -93,8 +93,10 @@ this does not guarantee exclusive access to your provider account. Allowed
 services can still receive session data.
 
 Selecting provider mode prints a residual-exfiltration notice listing the hosts
-of each method (`account: oauth2.googleapis.com, cloudcode-pa.googleapis.com`;
-`gemini: generativelanguage.googleapis.com`) and asks `Acknowledge that allowed
+of each method (`account: oauth2.googleapis.com, cloudcode-pa.googleapis.com,
+daily-cloudcode-pa.googleapis.com, www.googleapis.com, aicode.googleapis.com,
+www.gstatic.com, play.googleapis.com`; `gemini:
+generativelanguage.googleapis.com`) and asks `Acknowledge that allowed
 provider hosts can receive data sent with foreign credentials? (yes/no)`.
 Destination binding cannot tell your credentials from attacker-supplied ones,
 so a prompt-injected agent can send workspace data to an allowed host with a
