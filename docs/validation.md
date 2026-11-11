@@ -591,3 +591,25 @@ Still open:
 - Whether `cloudcode-pa.googleapis.com`, `aicode.googleapis.com` and
   `www.gstatic.com` are needed. The proxy logs denials only, so a passing
   session cannot show that a host went unused.
+
+## Adoption of `sandbox-ref-10`: 2026-11-11
+
+Copied from `claude-container` tag `sandbox-ref-10` (commit `0f6585f`):
+
+- `network/agent_profile.py`, `setup/common.py`, `setup/setup.py`;
+- `tests/test_agent_profile.py`, `tests/test_setup.py`.
+
+The `tests/test_reference_copy.py` manifest moved to the tag. Antigravity has
+no shared directories, so the profile keeps the default
+`native.private_shared_dirs: false`. A failed setup smoke launch now shows the
+wrapper's sanitized stderr.
+
+| Check | Result |
+| --- | --- |
+| `bash tests/run-runtime.sh --shared` | Passed: 149 tests, 27 skipped (run by the modes) |
+| `bash tests/run-runtime.sh --setup` | Passed: 68 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 5 tests |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 63 tests |
+
+A first run of all wrappers' suites was interrupted by a host crash. Its
+leftover test containers were removed before this run.
