@@ -255,18 +255,18 @@ Provider mode SHALL set consistent uppercase and lowercase HTTP/HTTPS proxy valu
 
 ### Requirement: Separate Google account and Gemini API profiles
 Provider mode SHALL require a named protected profile that describes the upstream service rather than the model brand. The base profiles SHALL be:
-- `google-account`, allowing only the OAuth token and model-service hosts that `agy` uses after sign-in, each on port 443;
+- `google-account`, allowing only the account hosts that `agy` uses after sign-in, each on port 443;
 - `gemini-api`, allowing `generativelanguage.googleapis.com:443`.
 
 Hosts SHALL be measured on the pinned `agy` version. Wildcards such as `*.googleapis.com` or `*.google.com`, and shared cloud storage, SHALL NOT be used.
 
 #### Scenario: API profile
 - **WHEN** `gemini-api` is selected
-- **THEN** only `generativelanguage.googleapis.com:443` is reachable, and the account hosts, update checks and unrelated feature hosts are denied
+- **THEN** only `generativelanguage.googleapis.com:443` is reachable, and the account hosts, telemetry, update checks and unrelated feature hosts are denied
 
 #### Scenario: Account profile
 - **WHEN** `google-account` is selected
-- **THEN** only its measured hosts are reachable, and `generativelanguage.googleapis.com`, update and telemetry hosts are denied unless measured as required
+- **THEN** only its measured hosts are reachable, and `generativelanguage.googleapis.com`, update hosts and the sandbox Cloud Code variants are denied
 
 #### Scenario: Profile inventory is dated
 - **WHEN** a profile is shipped
@@ -294,7 +294,7 @@ Vertex AI, enterprise and custom Gemini endpoints, ADC, other model providers an
 - **AND** no port is published, no host-network exception is added and `accounts.google.com` gets no container rule
 
 ### Requirement: Optional traffic remains opt-in
-Restricted sessions SHALL keep `AGY_CLI_DISABLE_AUTO_UPDATE=true` and SHALL disable telemetry where the tested version supports it, using protected values, set after forwarding, that writable settings and forwarded variables cannot override. Runtime extension, plugin or package installs SHALL stay denied. A missing disable control SHALL NOT broaden the allowlist. Shell mode SHALL keep the same outer restrictions.
+Restricted sessions SHALL keep `AGY_CLI_DISABLE_AUTO_UPDATE=true` and SHALL disable telemetry where the tested version supports it, using protected values, set after forwarding, that writable settings and forwarded variables cannot override. Runtime extension, plugin or package installs SHALL stay denied. A missing disable control SHALL NOT broaden the allowlist, except as the profile-scoped telemetry exception allows. Shell mode SHALL keep the same outer restrictions.
 
 #### Scenario: Optional feature attempts outbound access
 - **WHEN** a disabled feature, an extension or a writable setting attempts an update, telemetry, package or share request to an unapproved host
@@ -492,7 +492,11 @@ Provider help, README and the network contract SHALL state that destination and 
 
 #### Scenario: Operator reads the provider limits
 - **WHEN** an operator reads the provider help, README or network contract
-- **THEN** the foreign-credential channel is described for every allowed host of the selected profile, including the `google-account` hosts and `generativelanguage.googleapis.com`
+- **THEN** the foreign-credential channel is described for every allowed host of the selected profile: all seven `google-account` hosts, and `generativelanguage.googleapis.com`
+
+#### Scenario: Setup acknowledgement lists the current hosts
+- **WHEN** guided setup asks the operator to acknowledge the residual-exfiltration notice for provider mode
+- **THEN** the notice lists the same account hosts as the protected policy
 
 ### Requirement: Accurate provider identity documentation
 Provider help and the network contract SHALL distinguish CONNECT authorization, SNI binding of the initial and retried ClientHellos, and encrypted application routing. They SHALL state that matching SNI does not prove exclusive communication with the operator's provider account, and SHALL name uninspected TLS 1.2 renegotiation as an accepted limitation. Credential-injecting interception SHALL be described as unimplemented.
@@ -520,3 +524,31 @@ Documentation SHALL map N01–N14 and C01–C12 to implementation and acceptance
 #### Scenario: Parity table
 - **WHEN** a reader compares the five wrappers
 - **THEN** `docs/network-contract.md` here, in `claude-container`, `codex-container`, `opencode-container` and `pi-container` show the same Antigravity row, with authenticated compatibility recorded as pending until the operator checks run
+
+### Requirement: Measured Google account hosts
+For `agy` 1.5.3, `google-account` SHALL allow exactly these hosts on port 443:
+- `oauth2.googleapis.com`;
+- `cloudcode-pa.googleapis.com`;
+- `daily-cloudcode-pa.googleapis.com`, the CLI's default Cloud Code endpoint;
+- `www.googleapis.com`;
+- `aicode.googleapis.com`;
+- `www.gstatic.com`;
+- `play.googleapis.com`.
+
+They were measured by static inventory and operator-run authenticated sessions. The auto-updater and the sandbox Cloud Code variants SHALL stay denied in every profile.
+
+#### Scenario: Account eligibility check reaches its hosts
+- **WHEN** a signed-in `agy` 1.5.3 session under `google-account` runs its eligibility check (`loadCodeAssist` and user information)
+- **THEN** the proxy admits the connections to the measured account hosts, and the TLS destination binding applies as for the other allowed hosts
+
+#### Scenario: Unmeasured endpoint variants stay denied
+- **WHEN** a `google-account` session connects to `autopush-cloudcode-pa.sandbox.googleapis.com`, `preprod-daily-cloudcode-pa.sandbox.googleapis.com` or the auto-updater
+- **THEN** the proxy denies it, and the sanitized diagnostics name the host as `policy-denied`
+
+### Requirement: Profile-scoped telemetry exception
+A telemetry host MAY be allowed only in a base profile whose operator-run authenticated session measured it together with that profile's required hosts. It SHALL be disclosed as telemetry, and other profiles SHALL keep denying it. On `agy` 1.5.3 the exception applies only to `play.googleapis.com` under `google-account`.
+
+#### Scenario: Telemetry follows the profile
+- **WHEN** `agy` 1.5.3 sends telemetry to `play.googleapis.com`
+- **THEN** it is admitted under `google-account` and denied under `gemini-api`
+- **AND** provider help, README and the network contract state that account-mode telemetry reaches Google

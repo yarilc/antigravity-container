@@ -221,8 +221,12 @@ left.close(); right.close()
                     '--entrypoint', 'openssl', IMAGE, 'req', '-x509', '-newkey', 'rsa:2048',
                     '-nodes', '-days', '1', '-subj', '/CN=localhost.localdomain', '-addext',
                     'subjectAltName=DNS:localhost.localdomain,DNS:alternate.test,DNS:oauth2.googleapis.com,'
-                    'DNS:cloudcode-pa.googleapis.com,DNS:generativelanguage.googleapis.com,DNS:play.googleapis.com,'
-                    'DNS:www.googleapis.com,DNS:antigravity-cli-auto-updater-974169037036.us-central1.run.app',
+                    'DNS:cloudcode-pa.googleapis.com,DNS:daily-cloudcode-pa.googleapis.com,'
+                    'DNS:generativelanguage.googleapis.com,DNS:play.googleapis.com,DNS:www.googleapis.com,'
+                    'DNS:aicode.googleapis.com,DNS:www.gstatic.com,'
+                    'DNS:autopush-cloudcode-pa.sandbox.googleapis.com,'
+                    'DNS:preprod-daily-cloudcode-pa.sandbox.googleapis.com,'
+                    'DNS:antigravity-cli-auto-updater-974169037036.us-central1.run.app',
                     # Strict TLS clients reject a CA certificate used as the server certificate.
                     '-addext', 'basicConstraints=critical,CA:FALSE', '-addext', 'extendedKeyUsage=serverAuth',
                     '-keyout', '/fixture/key.pem',
@@ -264,17 +268,22 @@ left.close(); right.close()
         _, environment = self.provider_fixture()
         shutil.copyfile(ROOT / 'tests/tls_binding_fixture.py', self.project / 'binding.py')
         for profile, hosts in (('controlled-test', 'localhost.localdomain'),
-                               ('controlled-google-account', 'oauth2.googleapis.com cloudcode-pa.googleapis.com'),
+                               ('controlled-google-account', 'oauth2.googleapis.com,cloudcode-pa.googleapis.com,'
+                                'daily-cloudcode-pa.googleapis.com,www.googleapis.com,aicode.googleapis.com,'
+                                'www.gstatic.com,play.googleapis.com'),
                                ('controlled-gemini-api', 'generativelanguage.googleapis.com')):
+            # The shared fixture takes one comma-separated argument and checks every host.
             result = self.shell('python3 binding.py ' + hosts + '\n', **(environment | {
                 'ANTIGRAVITY_CONTAINER_NETWORK_PROFILE': profile}))
             self.assert_success(result)
-            self.assertIn('tls-destination-binding-ok', result.stdout)
-        # Telemetry, update and other Google hosts are policy denials, even
-        # though the fixture resolver and certificate would still serve them.
-        result = self.shell("""python3 - <<'PY'
+            self.assertIn('tls-destination-binding-ok profiles=' + hosts + ' ', result.stdout)
+        # Update, Gemini API and sandbox Cloud Code hosts are policy denials
+        # under google-account, even though the fixture resolver and
+        # certificate would still serve them. Account hosts, including
+        # telemetry, are denied under gemini-api.
+        denial_script = """python3 - <<'PY'
 import socket
-for host in ('play.googleapis.com', 'antigravity-cli-auto-updater-974169037036.us-central1.run.app', 'www.googleapis.com', 'generativelanguage.googleapis.com'):
+for host in (%s):
     connection = socket.create_connection(('127.0.0.1', 18080), 5)
     connection.sendall(('CONNECT ' + host + ':443 HTTP/1.1\\r\\n\\r\\n').encode())
     response = connection.recv(64)
@@ -282,11 +291,20 @@ for host in ('play.googleapis.com', 'antigravity-cli-auto-updater-974169037036.u
     connection.close()
 print('optional-hosts-denied')
 PY
-""", **(environment | {'ANTIGRAVITY_CONTAINER_NETWORK_PROFILE': 'controlled-google-account'}))
-        self.assert_success(result)
-        self.assertIn('optional-hosts-denied', result.stdout)
-        self.assertIn('policy-denied', result.stderr)
-        self.assertIn('play.googleapis.com', result.stderr)
+"""
+        for profile, hosts in (
+                ('controlled-google-account', ('antigravity-cli-auto-updater-974169037036.us-central1.run.app',
+                    'generativelanguage.googleapis.com', 'autopush-cloudcode-pa.sandbox.googleapis.com',
+                    'preprod-daily-cloudcode-pa.sandbox.googleapis.com')),
+                ('controlled-gemini-api', ('play.googleapis.com', 'daily-cloudcode-pa.googleapis.com',
+                    'cloudcode-pa.googleapis.com', 'oauth2.googleapis.com', 'www.googleapis.com',
+                    'aicode.googleapis.com', 'www.gstatic.com'))):
+            result = self.shell(denial_script % ', '.join(repr(host) for host in hosts),
+                                **(environment | {'ANTIGRAVITY_CONTAINER_NETWORK_PROFILE': profile}))
+            self.assert_success(result)
+            self.assertIn('optional-hosts-denied', result.stdout)
+            self.assertIn('policy-denied', result.stderr)
+            self.assertIn(hosts[0], result.stderr)
 
     def test_provider_uses_real_proxy_and_cleans_resources(self):
         context, environment = self.provider_fixture()

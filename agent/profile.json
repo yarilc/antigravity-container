@@ -27,7 +27,8 @@
     "account": {
       "description": "reuses Google account sign-in with the remote URL and code flow",
       "policy_profile": "google-account",
-      "hosts": ["oauth2.googleapis.com", "cloudcode-pa.googleapis.com"],
+      "hosts": ["oauth2.googleapis.com", "cloudcode-pa.googleapis.com", "daily-cloudcode-pa.googleapis.com",
+               "www.googleapis.com", "aicode.googleapis.com", "www.gstatic.com", "play.googleapis.com"],
       "login_args": []
     },
     "gemini": {
