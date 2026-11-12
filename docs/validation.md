@@ -627,3 +627,70 @@ This covers an authenticated model request with tool use through the sandbox.
 Token refresh, `/logout` and the `gemini-api` key checks remain pending. Full profile verification under the readiness checklist is not
 claimed. The checklist also covers streaming and long-lived requests,
 WebSockets, sign-in, token reuse and refresh, CA behavior and shell mode.
+
+## Adoption of `sandbox-ref-12` and lab-host fixes (`adopt-lab-host-fixes`): 2026-11-12
+
+Copied from `claude-container` tag `sandbox-ref-12` (commit `fd196c9`),
+adopted directly from `sandbox-ref-10`:
+
+- `network/.containerignore`, `network/README.md`, `network/agent_budgets.py`;
+- `network/control.py`, `network/guard-build.Containerfile`, `network/guard.c`;
+- `network/proxy.py`, `network/proxy_hardening.py`;
+- `network/qualification_peer.py`, `network/qualification_probe.py`,
+  `network/qualification_records.py`, `network/qualification_runtime.py`;
+- `network/qualify.py`, `network/session.py`;
+- `setup/setup.py`, `setup/smoke.py`;
+- `tests/test_guard.py`, `tests/test_network_policy.py`,
+  `tests/test_qualification.py`, `tests/test_session.py`, `tests/test_setup.py`.
+
+The `tests/test_reference_copy.py` manifest moved to the tag.
+
+Antigravity adaptations, equivalent to the other wrappers' ports:
+
+- the delegation response accepts a Podman 5 `unix://` host socket report;
+- each budget is requested only when its cgroup controller is delegated,
+  with notices, and the inspection requires enforced budgets and no
+  unenforced one;
+- the `/run/secrets` and `/dev/shm` read-only masks;
+- `--read-only-tmpfs=false` is removed;
+- the `build-ca` secret is passed to the build;
+- Debian packages are fetched over verified HTTPS;
+- `/workspace` is created in the image.
+
+Antigravity also passes the optional `build-ca` secret to the agy artifact
+download (`curl --cacert`), keeping the SHA-512 check.
+
+**PTY defect found and fixed.** The reference layout also mounts its own
+`/dev` tmpfs and `--mount type=devpts,destination=/dev/pts`. That `devpts`
+gets the kernel defaults `mode=600,ptmxmode=000`, so no pseudo-terminal can be
+opened inside the session ("out of pty devices"). agy runs tool commands in a
+PTY, and `test_actual_agy_tool_with_synthetic_gemini_api` failed: the tool
+command never wrote its sentinel. Podman rejects `ptmxmode` as a `devpts`
+mount option. Antigravity therefore leaves `/dev` to the engine, whose
+`devpts` has `ptmxmode=666,mode=620`, and keeps only the `/dev/shm` mask. The
+new runtime test `test_pseudo_terminals_and_device_masks` fails on the
+previous layout and passes now.
+
+The same defect exists in the Claude, Codex, OpenCode and Pi launchers. It is
+latent there, because their tested tools do not open a PTY, and is fixed in
+follow-up changes. Trade-off: on Podman 5, `/dev` is the engine's writable
+tmpfs without the extra `noexec`. On Podman 4.9 it stays read-only.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 350 tests, 72 skipped |
+| `python3 -m unittest discover -s tests -p test_wrapper.py` | Passed: 69 tests, 1 skipped. New: socket URL and invalid `unix://` values, controller subsets, unverifiable lists, enforced or unenforced inspection, device masks without an explicit `/dev` or `devpts` in every mode, proxy mask and budgets, build secret with and without trust |
+| `python3 -m unittest tests.test_image_pins` | Passed: 8 tests (transport, toolchain, workdir and artifact-download checks with mutations) |
+| `bash tests/run-runtime.sh --shared` | Passed: 167 tests, 28 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 71 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 5 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 27 tests |
+| `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped (the 305-second idle check) |
+| `bash tests/run-runtime.sh --network` | Passed: 21 tests, including `test_actual_agy_tool_with_synthetic_gemini_api`. It failed with the explicit `devpts` |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 17 tests, including `test_pseudo_terminals_and_device_masks` |
+| Runtime image `localhost/antigravity-cli:adopt-ref-12` | Built with the wrapper's build arguments (`--no-cache`), image `132d6f14c7c5`. Debian sources `https://`, no bootstrap bundle or `/tmp/agy`, agy `1.5.3`, OpenSpec `1.16.0`. `/workspace` is in the exported layer (build time 17:34), unchanged by a `keep-id` start at 17:35 |
+| `bash -n` on the launcher, entrypoint and test scripts; `git diff --check`; `openspec validate adopt-lab-host-fixes --strict` | Passed, clean, valid |
+| Operator `--container-setup` and a session on this host, the Rocky Linux 9 lab host (Podman 5: terminal attach with the engine's `/dev`) and the newer WSL host | Pending |
+
+Every restricted installation must rebuild and rerun setup. The project is
+not distributed, so the operator may clean existing state instead.

@@ -272,6 +272,29 @@ for path, limit, executable in (('/tmp', 512*1024*1024, True),
         self.assert_success(self.shell(
             'for path in /tmp /var/tmp /run; do test ! -e "$path/antigravity-ephemeral"; done\n'))
 
+    def test_pseudo_terminals_and_device_masks(self):
+        # agy runs tool commands in a PTY: the session must allocate one, while
+        # /dev/shm and /run/secrets stay empty read-only masks.
+        probe = r'''import os
+import pathlib
+import pty
+master, slave = pty.openpty()
+assert os.ttyname(slave).startswith('/dev/pts/'), os.ttyname(slave)
+os.close(master); os.close(slave)
+for path in ('/dev/shm', '/run/secrets'):
+    assert list(pathlib.Path(path).iterdir()) == [], path
+    try:
+        (pathlib.Path(path) / 'probe').write_text('x')
+    except OSError:
+        pass
+    else:
+        raise AssertionError(path + ' is writable')
+print('pty-and-masks-ok')
+'''
+        result = self.shell('python3 -c ' + shlex.quote(probe) + '\n')
+        self.assert_success(result)
+        self.assertIn('pty-and-masks-ok', result.stdout)
+
     def test_runtime_file_modes_by_execution_path(self):
         self.state.mkdir(exist_ok=True)
         self.state.chmod(0o700)

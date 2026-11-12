@@ -438,8 +438,15 @@ Absolute paths are preserved because the host service resolves bind sources
 for child containers. The process uses `--userns=keep-id` and the caller's
 UID/GID, so files created in the project belong to the caller. The container
 root is read-only; workspace and application state are writable, with ephemeral
-tmpfs storage provisioned explicitly with automatic read-only tmpfs mounts
-disabled. `/tmp` allows execution for native runtime components and has a
+tmpfs storage provisioned explicitly. Automatic read-only tmpfs provisioning
+stays enabled, because Podman 5 with crun 1.27 cannot attach a terminal to a
+read-only `/dev`: the engine provides `/dev` and a `devpts` that allows
+pseudo-terminals, which agy uses to run tool commands. An explicit `devpts`
+mount would get `ptmxmode=000` and no pseudo-terminal could be opened. `/dev/shm`
+is masked with an empty read-only tmpfs, so tools that need POSIX shared memory
+there are not supported. An empty
+read-only tmpfs at `/run/secrets` masks engine default mounts there (for
+example RHEL subscription certificates from `mounts.conf`). `/tmp` allows execution for native runtime components and has a
 512 MiB limit; `/var/tmp` uses `noexec` with a separate 512 MiB limit; `/run`
 uses `noexec` with a 32 MiB limit. All three use `nosuid,nodev`, writable mode
 `1777`, and disappear with the container. Restricted sessions also mount the
@@ -498,10 +505,19 @@ still grants host engine authority beyond these limits.
 Every session has memory, CPU and process budgets (defaults 4 GiB, 2 CPUs and
 512 processes; see [Environment](#environment)). Only an unset variable selects
 the default; no value disables a budget, and an invalid value stops the wrapper
-before any engine query. After creating the container, the wrapper checks that
-the engine applied every budget and stops before agy starts otherwise. Budgets
-need delegated rootless cgroup v2 `cpu`, `memory` and `pids` controllers.
-Budgets and tmpfs sizes do not limit workspace or state storage growth.
+before any engine query. Each budget is enforced only when the rootless engine
+delegates its cgroup v2 controller (`memory`, `cpu`, `pids`), as reported by
+`podman info` (`Host.CgroupControllers`). A missing controller leaves that
+budget unenforced: the wrapper does not request it, prints a notice such as
+`antigravity-container: agent CPU budget not enforced: cgroup controller cpu is
+not delegated to the rootless engine`, and continues without a question.
+Provider proxies follow the same rule for their 128-process and 256 MiB limits.
+Without the memory or process budget, a session can exhaust host memory or
+processes for your user. After creating the container, the wrapper checks that
+every enforced budget was applied and that no unenforced one is present, and
+stops before agy starts otherwise. Restricted qualification records the
+enforced set, so a change in delegation requires requalification. Budgets and
+tmpfs sizes do not limit workspace or state storage growth.
 
 `ANTIGRAVITY_CONTAINER_RUN_TIMEOUT` optionally sets the session container
 lifetime in whole seconds; unset, empty or `0` disables it. When the engine
@@ -560,7 +576,15 @@ executable from a recorded official release artifact for amd64 or arm64, whose
 URL and SHA-512 come from Google's platform manifest and are pinned in
 `Containerfile` (`AGY_VERSION`, `AGY_URL_*`, `AGY_SHA512_*`). OpenSpec is pinned
 by `OPENSPEC_VERSION`. Other architectures fail the build explicitly.
-`tests/test_image_pins.py` rejects floating inputs. No npm Antigravity substitute,
+`tests/test_image_pins.py` rejects floating inputs. Debian packages are fetched
+over verified HTTPS only, so image preparation needs outbound HTTPS (443) to the
+Debian, npm, container and release registries, not port 80. With host CA trust
+enabled, the selected bundle is passed to the build as the `build-ca` secret:
+apt and the agy artifact download verify against it on TLS-intercepting
+networks, the artifact SHA-512 check is unchanged, and the bundle is never
+stored in a layer. The recipe creates `/workspace` in the image, so the engine
+never creates or chowns the working directory when a container starts (this
+fails for large domain UIDs under `keep-id`). No npm Antigravity substitute,
 graphical IDE, Python SDK, browser, D-Bus daemon or keyring is installed. The
 image also contains `network/relay.py` and `network/mux.py` at
 `/opt/sandbox-egress/` for restricted sessions; the guard is never part of
