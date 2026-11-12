@@ -206,11 +206,39 @@ class WrapperTests(unittest.TestCase):
     def test_explicit_temporary_mount_arguments(self):
         self.assertEqual(self.run_wrapper().returncode, 0)
         create = self.create()
-        self.assertIn('--read-only-tmpfs=false', create)
+        self.assertNotIn('--read-only-tmpfs=false', create)
         tmpfs = [create[i+1] for i, arg in enumerate(create) if arg == '--tmpfs']
         self.assertEqual(tmpfs, ['/tmp:rw,exec,nosuid,nodev,mode=1777,size=512m',
                                  '/run:rw,nosuid,nodev,noexec,mode=1777,size=32m',
                                  '/var/tmp:rw,nosuid,nodev,noexec,mode=1777,size=512m'])
+
+    DEVICE_MOUNTS = ('type=tmpfs,destination=/dev/shm,ro=true',
+                     'type=tmpfs,destination=/run/secrets,ro=true')
+
+    def assert_device_and_secret_mounts(self, args):
+        self.assertIn('--read-only', args)
+        self.assertNotIn('--read-only-tmpfs=false', args)
+        mounts = [args[i + 1] for i, arg in enumerate(args[:-1]) if arg in ('--tmpfs', '--mount')]
+        for mount in self.DEVICE_MOUNTS:
+            self.assertEqual(mounts.count(mount), 1, mount)
+        # /dev and its devpts are the engine's: an explicit devpts mount has
+        # ptmxmode=000 and leaves no usable pseudo-terminal.
+        self.assertFalse(any(m.startswith('/dev:') or m.startswith('/dev/pts') or 'destination=/dev/pts' in m
+                             for m in mounts))
+        # Antigravity temporary storage keeps its own policy and sizes.
+        for mount in ('/tmp:rw,exec,nosuid,nodev,mode=1777,size=512m',
+                      '/run:rw,nosuid,nodev,noexec,mode=1777,size=32m',
+                      '/var/tmp:rw,nosuid,nodev,noexec,mode=1777,size=512m'):
+            self.assertIn(mount, mounts)
+
+    def test_device_and_secret_mounts_in_every_unrestricted_mode(self):
+        for flags, env in itertools.product(((), ('--container-shell',)),
+                                            ({}, {'ANTIGRAVITY_CONTAINER_PODMAN': '1'})):
+            with self.subTest(flags=flags, env=env):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(*flags, **env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assert_device_and_secret_mounts(self.create())
 
     def test_tty_allocated_for_terminal(self):
         import pty
@@ -278,7 +306,8 @@ class WrapperTests(unittest.TestCase):
         for options in ((), ('--container-build',)):
             for response in ('', 'true', 'false /socket', 'maybe /socket',
                              'true relative', 'true /', 'true /socket\nextra',
-                             'true /socket\n', 'true /socket\n\n'):
+                             'true /socket\n', 'true /socket\n\n',
+                             'true unix://relative', 'true unix://', 'true unix:///'):
                 with self.subTest(options=options, response=response):
                     self.log.unlink(missing_ok=True)
                     result = self.run_wrapper(*options, ANTIGRAVITY_CONTAINER_PODMAN='1',
@@ -299,6 +328,14 @@ class WrapperTests(unittest.TestCase):
             self.assertFalse(any(c[0] == '--remote' for c in self.calls()))
         finally:
             self.socket_path.chmod(0o600)
+
+    def test_podman5_socket_url_is_reduced_to_its_path(self):
+        # Podman 5 reports Host.RemoteSocket.Path as a unix:// URL.
+        result = self.run_wrapper(ANTIGRAVITY_CONTAINER_PODMAN='1',
+                                  FAKE_SOCKET_INFO='true unix:///host path/podman.sock')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('/host path/podman.sock:/run/podman/podman.sock:rw', self.create())
+        self.assertFalse(any('unix://' in arg and 'podman.sock:rw' in arg for arg in self.create()))
 
     def test_socket_selection_canonicalization_and_host_remapping(self):
         alias = self.base / 'socket alias'
@@ -720,6 +757,66 @@ class WrapperTests(unittest.TestCase):
                     self.assertEqual(self.calls(), [])
                     self.assertFalse(self.state.exists())
 
+    def test_builds_receive_the_host_ca_only_when_trusted(self):
+        bundle = self.base / 'build-bundle.pem'
+        bundle.write_text('synthetic certificate bundle')
+        for (flags, image_status), trust in itertools.product(
+                ((('--container-build',), '0'), ((), '1')), ('0', '1')):
+            with self.subTest(flags=flags, missing=image_status == '1', trust=trust):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(*flags, ANTIGRAVITY_CONTAINER_MAINTENANCE='1',
+                                          ANTIGRAVITY_CONTAINER_TRUST_HOST_CA=trust,
+                                          ANTIGRAVITY_CONTAINER_CA_BUNDLE=str(bundle), FAKE_IMAGE_STATUS=image_status)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                build = next(c for c in self.calls() if c[0] == 'build')
+                secrets = [build[i + 1] for i, arg in enumerate(build[:-1]) if arg == '--secret']
+                self.assertEqual(secrets, [f'id=build-ca,src={bundle.resolve()}'] if trust == '1' else [])
+
+    def test_budgets_follow_delegated_controllers(self):
+        notices = {'memory': 'agent memory budget not enforced: cgroup controller memory',
+                   'cpu': 'agent CPU budget not enforced: cgroup controller cpu',
+                   'pids': 'agent process budget not enforced: cgroup controller pids'}
+        for size in range(4):
+            for present in itertools.combinations(('cpu', 'memory', 'pids'), size):
+                controllers = '[' + ' '.join(present) + ']'
+                with self.subTest(controllers=controllers):
+                    self.log.unlink(missing_ok=True)
+                    result = self.run_wrapper(FAKE_CONTROLLERS=controllers)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    create = self.create()
+                    self.assertEqual('--memory=4294967296' in create, 'memory' in present)
+                    self.assertEqual('--cpus=2' in create, 'cpu' in present)
+                    self.assertIn('--pids-limit=512' if 'pids' in present else '--pids-limit=-1', create)
+                    for controller, notice in notices.items():
+                        self.assertEqual(notice in result.stderr, controller not in present)
+                    self.assertIn('start', [c[0] for c in self.calls()])
+
+    def test_unverifiable_controller_list_stops_before_state(self):
+        for controllers in ('', 'cpu memory', '[cpu,memory]', '[CPU]', '[cpu  memory]', 'unknown'):
+            with self.subTest(controllers=controllers):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(FAKE_CONTROLLERS=controllers)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('cgroup controller', result.stderr)
+                self.assertFalse(any(c[0] in ('image', 'build', 'create') for c in self.calls()))
+                self.assertFalse(self.state.exists())
+
+    def test_unenforced_budget_present_or_enforced_budget_missing_stops(self):
+        cases = (('[memory pids]', '4294967296 2000000000 512', False),  # CPU applied without its controller
+                 ('[cpu memory]', '4294967296 2000000000 512', False),   # process limit without its controller
+                 ('[cpu pids]', '4294967296 2000000000 512', False),     # memory applied without its controller
+                 ('[cpu memory]', '4294967296 2000000000 0', True),      # unenforced pids reported as 0
+                 ('[cpu memory]', '4294967296 2000000000 -1', True),     # unenforced pids reported as -1
+                 ('[cpu memory pids]', '0 2000000000 512', False))       # enforced memory missing
+        for controllers, budgets, accepted in cases:
+            with self.subTest(controllers=controllers, budgets=budgets):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(FAKE_CONTROLLERS=controllers, FAKE_AGENT_BUDGETS=budgets)
+                self.assertEqual(result.returncode, 0 if accepted else 1, result.stderr)
+                if not accepted:
+                    self.assertIn('engine reports controllers ' + controllers, result.stderr)
+                    self.assertNotIn('start', [c[0] for c in self.calls()])
+
     def test_budget_mismatch_and_inspection_failure_stop_before_start(self):
         for env in ({'FAKE_AGENT_BUDGETS': '0 2000000000 512'}, {'FAKE_AGENT_BUDGETS': f'{4 << 30} 2000000000 2048'},
                     {'FAKE_AGENT_BUDGETS': f'{4 << 30} 0 512'}, {'FAKE_INSPECT_STATUS': '125'}):
@@ -822,7 +919,7 @@ class WrapperTests(unittest.TestCase):
         guard.write_text('#!/bin/sh\nexit 0\n')
         guard.chmod(0o700)
         (guard.parent / 'sandbox-egress-guard.sha256').write_text('c' * 64 + '  sandbox-egress-guard\n')
-        for name in ('network/session.py', 'network/agent_profile.py', 'network/policy.py', 'network/revisions.py',
+        for name in ('network/session.py', 'network/agent_profile.py', 'network/agent_budgets.py', 'network/policy.py', 'network/revisions.py',
                      'network/platform_check.py', 'network/proxy_hardening.py', 'agent/profile.json'):
             (install / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, install / name)
@@ -1108,6 +1205,7 @@ class WrapperTests(unittest.TestCase):
                     self.assertIn('AGY_CLI_DISABLE_AUTO_UPDATE=true', values)
                     self.assertTrue(any(create[i:i + 2] == ['--unsetenv', 'DBUS_SESSION_BUS_ADDRESS'] for i in range(len(create))))
                     self.assertIn('--network=none', create)
+                    self.assert_device_and_secret_mounts(create)
                     self.assertEqual(create[create.index('--entrypoint', create.index('--network=none')) + 1],
                                      '/opt/sandbox-egress/guard')
                     self.assertNotIn('/bin/bash', create[:create.index('d' * 64)])
@@ -1130,6 +1228,12 @@ class WrapperTests(unittest.TestCase):
                 order = [n for n in self.names() if n in ('qualify.py', 'create', 'exec', 'start', 'rm')]
                 self.assertEqual(order, ['qualify.py', 'create', 'start', 'exec', 'create', 'start', 'rm', 'rm'])
                 agent = self.creates()[1]
+                self.assert_device_and_secret_mounts(agent)
+                # The shared proxy helper masks /run/secrets and requests both delegated budgets.
+                proxy = self.creates()[0]
+                self.assertIn('type=tmpfs,destination=/run/secrets,ro=true', proxy)
+                self.assertIn('--memory=256m', proxy)
+                self.assertIn('--pids-limit=128', proxy)
                 values = self.env_values(agent)
                 self.assertIn('HTTPS_PROXY=http://127.0.0.1:18080', values)
                 self.assertIn('no_proxy=localhost,127.0.0.1,::1', values)

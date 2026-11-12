@@ -17,28 +17,45 @@ ENV DEBIAN_FRONTEND=noninteractive \
     VISUAL=nano \
     AGY_CLI_DISABLE_AUTO_UPDATE=true
 
-RUN apt-get update \
-    && apt-get install --no-install-recommends -y \
+# Debian packages are fetched only over verified HTTPS, so builds need no outbound
+# port 80. The slim base has no ca-certificates, so the pinned base's Node.js root
+# certificates verify the fetches until Debian ca-certificates is installed. With
+# host CA trust enabled, the selected bundle arrives as the optional build-ca
+# secret (never stored in a layer) and is appended for TLS-intercepting networks.
+# The temporary bundle stays readable by apt's _apt user and is removed in this step.
+RUN --mount=type=secret,id=build-ca,required=false \
+    node -e 'process.stdout.write(require("tls").rootCertificates.join("\n") + "\n")' \
+        > /tmp/apt-bootstrap-ca.pem \
+    && if [ -s /run/secrets/build-ca ]; then cat /run/secrets/build-ca >> /tmp/apt-bootstrap-ca.pem; fi \
+    && sed -i 's|^URIs: http://|URIs: https://|' /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::https::CAInfo=/tmp/apt-bootstrap-ca.pem update \
+    && apt-get -o Acquire::https::CAInfo=/tmp/apt-bootstrap-ca.pem install --no-install-recommends -y \
         bash bubblewrap bzip2 ca-certificates coreutils curl diffutils \
         file findutils gawk git grep gzip jq less libc6 \
         libgcc-s1 libstdc++6 nano openssl patch podman \
         procps python3 ripgrep sed tar unzip util-linux xz-utils zip \
+    && rm -f /tmp/apt-bootstrap-ca.pem \
     && npm install --global --omit=dev "@fission-ai/openspec@${OPENSPEC_VERSION}" \
     && printf '\nunset historylog\n' >> /etc/nanorc \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /root/.npm \
-    && mkdir -p /antigravity-home \
+    && mkdir -p /antigravity-home /workspace \
     && chmod 1777 /antigravity-home
 
 # Install the recorded official artifact for this architecture after verifying
-# its SHA-512. Explicit wrapper rebuilds disable the build cache.
-RUN case "$(uname -m)" in \
+# its SHA-512. Explicit wrapper rebuilds disable the build cache. The download
+# verifies TLS against the image roots plus the optional build-ca secret (host CA
+# trust); the combined bundle lives in /tmp/agy and is removed with it.
+RUN --mount=type=secret,id=build-ca,required=false \
+    case "$(uname -m)" in \
         x86_64|amd64) agy_url="$AGY_URL_AMD64"; agy_sha512="$AGY_SHA512_AMD64" ;; \
         aarch64|arm64) agy_url="$AGY_URL_ARM64"; agy_sha512="$AGY_SHA512_ARM64" ;; \
         *) echo "Unsupported architecture for agy: $(uname -m)" >&2; exit 1 ;; \
     esac \
     && mkdir /tmp/agy \
-    && curl --fail --show-error --silent --location "$agy_url" -o /tmp/agy/agy.tar.gz \
+    && cat /etc/ssl/certs/ca-certificates.crt > /tmp/agy/ca.pem \
+    && if [ -s /run/secrets/build-ca ]; then cat /run/secrets/build-ca >> /tmp/agy/ca.pem; fi \
+    && curl --fail --show-error --silent --location --cacert /tmp/agy/ca.pem "$agy_url" -o /tmp/agy/agy.tar.gz \
     && printf '%s  /tmp/agy/agy.tar.gz\n' "$agy_sha512" | sha512sum --check --strict - \
     && tar -xzf /tmp/agy/agy.tar.gz -C /tmp/agy antigravity \
     && install -m 0755 /tmp/agy/antigravity /usr/local/bin/agy \
@@ -55,5 +72,8 @@ COPY network/relay.py network/mux.py /opt/sandbox-egress/
 RUN chmod 755 /usr/local/bin/antigravity-entrypoint \
     && chmod 644 /opt/sandbox-egress/relay.py /opt/sandbox-egress/mux.py
 
+# /workspace is created in the package step above: a WORKDIR missing from every
+# layer is created and chowned by the engine at each container start, which
+# fails for large domain UIDs under --userns=keep-id.
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/antigravity-entrypoint"]

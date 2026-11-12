@@ -23,6 +23,8 @@ if args[0] == 'info' and args[-1] == '{{json .Host}}':
         'security': {'seccompEnabled': True, 'selinuxEnabled': False, 'apparmorEnabled': False}}))
 elif args[0] == 'info' and args[-1] == '{{.Host.NetworkBackend}}':
     print(os.environ.get('FAKE_BACKEND', 'netavark'))
+elif args[0] == 'info' and args[-1] == '{{.Host.CgroupControllers}}':
+    print(os.environ.get('FAKE_CONTROLLERS', '[cpu memory pids]'))
 elif args[0] == 'version':
     print(os.environ.get('FAKE_SERVER_VERSION', '4.9.3'))
 elif args[:2] == ['image', 'inspect'] and '{{.Id}}' in args:
@@ -102,10 +104,11 @@ elif args[0] == 'inspect':
     else:
         calls = [json.loads(line) for line in log.read_text().splitlines()]
         create = [c for c in calls if c[0] == 'create'][-1]
-        value = lambda prefix: next(a[len(prefix):] for a in create if a.startswith(prefix))
-        whole, _, frac = value('--cpus=').partition('.')
+        # Unrequested budgets read as 0, as the engine reports them.
+        value = lambda prefix, default: next((a[len(prefix):] for a in create if a.startswith(prefix)), default)
+        whole, _, frac = value('--cpus=', '0').partition('.')
         nano = int(whole) * 10**9 + int((frac + '000')[:3]) * 10**6
-        print(value('--memory='), nano, value('--pids-limit='))
+        print(value('--memory=', '0'), nano, value('--pids-limit=', '0'))
     sys.exit(int(os.environ.get('FAKE_INSPECT_STATUS', '0')))
 elif args[0] in ('kill', 'rm'):
     if os.environ.get('FAKE_CONTROL_STALL') in (args[0], 'both'):
