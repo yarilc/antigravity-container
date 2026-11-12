@@ -64,7 +64,7 @@ Documentation SHALL explain that the socket grants control over the Podman user'
 - **THEN** they find the expansion beyond the filesystem boundary, defaults, and an example for each of the four combinations
 
 ### Requirement: Complete delegation service validation
-The wrapper SHALL require one complete delegation response containing verified rootless `true` and a nonempty absolute reported host socket path. It SHALL reject missing values, invalid rootless values, extra response records, and failed service queries before image inspection, build, or container creation. Paths containing spaces SHALL remain intact.
+The wrapper SHALL require one complete delegation response containing verified rootless `true` and a nonempty absolute reported host socket path. A reported path given as a `unix://` URL SHALL be reduced to its pathname before validation. It SHALL reject missing values, invalid rootless values, extra response records, and failed service queries before image inspection, build, or container creation. Paths containing spaces SHALL remain intact.
 
 #### Scenario: Invalid delegation response
 - **WHEN** the selected service query fails or returns empty, incomplete, rootful, malformed, relative-path, or multiline output
@@ -73,6 +73,14 @@ The wrapper SHALL require one complete delegation response containing verified r
 #### Scenario: Host socket path contains spaces
 - **WHEN** the service reports a valid absolute socket path containing spaces in a single response record
 - **THEN** the bind source preserves that path intact
+
+#### Scenario: Podman 5 reports a socket URL
+- **WHEN** the service reports `true unix:///run/user/1000/podman/podman.sock`
+- **THEN** the wrapper binds `/run/user/1000/podman/podman.sock` to `/run/podman/podman.sock`
+
+#### Scenario: Invalid socket URL
+- **WHEN** the reported value is `unix://` followed by an empty, relative or slash-only pathname
+- **THEN** startup fails before image operations or container creation
 
 ### Requirement: Disabled delegation clears service environment
 When delegation is disabled, the wrapper SHALL omit the socket mount, skip delegation socket validation, and explicitly remove `CONTAINER_HOST` from the launched container environment, including image or engine defaults. It SHALL preserve the wrapper's launch-engine connection and the host Podman prerequisite.

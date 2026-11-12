@@ -690,7 +690,7 @@ tmpfs without the extra `noexec`. On Podman 4.9 it stays read-only.
 | `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 17 tests, including `test_pseudo_terminals_and_device_masks` |
 | Runtime image `localhost/antigravity-cli:adopt-ref-12` | Built with the wrapper's build arguments (`--no-cache`), image `132d6f14c7c5`. Debian sources `https://`, no bootstrap bundle or `/tmp/agy`, agy `1.5.3`, OpenSpec `1.16.0`. `/workspace` is in the exported layer (build time 17:34), unchanged by a `keep-id` start at 17:35 |
 | `bash -n` on the launcher, entrypoint and test scripts; `git diff --check`; `openspec validate adopt-lab-host-fixes --strict` | Passed, clean, valid |
-| Operator `--container-setup` and a session on this host, the Rocky Linux 9 lab host (Podman 5: terminal attach with the engine's `/dev`) and the newer WSL host | Pending |
+| Operator `--container-setup` and a session on this host, the Rocky Linux 9 lab host (Podman 5: terminal attach with the engine's `/dev`) and the newer WSL host, provider profile | Passed (operator-reported, 2026-11-12): setup completed on all three hosts, and the operator interacted with the model in an attached terminal session on each |
 
 Every restricted installation must rebuild and rerun setup. The project is
 not distributed, so the operator may clean existing state instead.
