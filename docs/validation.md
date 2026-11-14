@@ -780,7 +780,7 @@ Fixture adaptations required by the new mount:
 | `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 20 tests, including archive and image sources, a failing check, the read-only mount, the image's `node` and `python3` kept first, `AGY_CLI_DISABLE_AUTO_UPDATE=true` kept against a toolchain, and the omitted mount |
 | Timing-sensitive checks | `test_lifetime_argument_and_notice` (synthetic) and `test_session_lifetime_limit_and_early_exit` (real engine) each failed once during development: exit status 255 without the lifetime notice. Both are unchanged by this adoption; each passed three isolated reruns and the full runs above |
 | Five-wrapper parity table | Identical to claude-container's (`sandbox-ref-17`) |
-| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host, `java -version` with the Temurin 21 toolchain, and `--container-toolchain verify java21` | Pending |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host, `java -version` with the Temurin 21 toolchain, and `--container-toolchain verify java21` | Passed (operator-reported, 2026-11-14): `main` pushed; setups and both Temurin 21 checks passed |
 
 Runtime image: `localhost/antigravity-cli:setup-cf551a6ade444811a7d732156d5aa0c0`
 as `ANTIGRAVITY_CONTAINER_IMAGE`. Qualification digests the launcher and
