@@ -19,6 +19,9 @@ Container options:
   --container-shell         open Bash instead of agy
   --container-git-worktree  mount the physical current directory's immediate
                            parent read/write; keep the original working directory
+  --container-toolchain     manage the shared read-only toolchain library;
+                           must be first: add <recipe.json> | list |
+                           remove <name> | verify [<name>]
   --container-help          show this help without requiring Podman
 
 All other arguments are forwarded unchanged to agy.
@@ -75,6 +78,10 @@ Environment:
     (default: 0, disabled by default)
   ANTIGRAVITY_CONTAINER_ALLOW_UNSAFE_WORKSPACE  exact 1 permits a refused
     sensitive workspace with a warning (default: disabled)
+  ANTIGRAVITY_CONTAINER_TOOLCHAINS  0, false, or no omits the read-only
+                                    /toolchains library mount (default: mounted)
+  ANTIGRAVITY_CONTAINER_TOOLCHAINS_DIR  toolchain library shared by the
+    wrappers (default: ${XDG_DATA_HOME:-~/.local/share}/sandbox-toolchains)
 
 YOLO accepts 1/true/yes or 0/false/no, case-insensitively; empty is disabled.
 Podman delegation is enabled only with exact ANTIGRAVITY_CONTAINER_PODMAN=1.
@@ -149,6 +156,13 @@ for arg in "$@"; do
     case "$arg" in --container-help) usage; exit 0 ;; esac
 done
 readonly DEDICATED_HOME_SUFFIX=.local/share/antigravity-container/home
+# Toolchain management runs on the host and never starts a session.
+if [[ "${1:-}" == --container-toolchain ]]; then
+    [[ "${2:-}" != launch-env ]] || die 'usage: --container-toolchain add <recipe.json> | list | remove <name> | verify [<name>]'
+    command -v python3 >/dev/null || die 'host Python 3 is required for the toolchain library'
+    toolchain_script=$(readlink -f -- "${BASH_SOURCE[0]}")
+    exec python3 -I "$(dirname -- "$toolchain_script")/setup/toolchains.py" "${@:2}"
+fi
 for arg in "$@"; do
     if [[ "$arg" == --container-qualify ]]; then
         [[ $# == 1 ]] || die '--container-qualify must be used alone'
@@ -186,6 +200,7 @@ for arg in "$@"; do
         --container-build) build_image=1 ;;
         --container-shell) shell_mode=1 ;;
         --container-git-worktree) git_worktree=1 ;;
+        --container-toolchain) die '--container-toolchain must be the first argument' ;;
         *) args+=("$arg") ;;
     esac
 done
@@ -214,6 +229,7 @@ boolean() {
 }
 yolo=$(boolean ANTIGRAVITY_YOLO "${ANTIGRAVITY_YOLO:-}")
 trust_host_ca=$(boolean ANTIGRAVITY_CONTAINER_TRUST_HOST_CA "${ANTIGRAVITY_CONTAINER_TRUST_HOST_CA:-}")
+toolchains_enabled=$(boolean ANTIGRAVITY_CONTAINER_TOOLCHAINS "${ANTIGRAVITY_CONTAINER_TOOLCHAINS-1}")
 podman_access=0
 [[ "${ANTIGRAVITY_CONTAINER_PODMAN:-}" != 1 ]] || podman_access=1
 if ((restricted && podman_access)); then
@@ -458,6 +474,30 @@ if ((trust_host_ca)); then
     fi
 fi
 
+# The operator's toolchain library is mounted read-only; the shared module
+# checks it stays private and outside the workspace, the one writable state
+# directory and the installation, and lists the default toolchains verified
+# for this runtime recipe.
+toolchain_library=''
+toolchain_path=''
+toolchain_env=()
+if ((toolchains_enabled && ! qualification_probe)); then
+    command -v python3 >/dev/null \
+        || die 'host Python 3 is required for the toolchain library; set ANTIGRAVITY_CONTAINER_TOOLCHAINS=0 to omit it'
+    toolchain_output=$(python3 -I "$script_dir/setup/toolchains.py" launch-env \
+        --avoid "$workspace_mount" --avoid "$state_dir") \
+        || die 'toolchain library check failed; set ANTIGRAVITY_CONTAINER_TOOLCHAINS=0 to start without it'
+    while IFS=$'\t' read -r toolchain_kind toolchain_first toolchain_second; do
+        case "$toolchain_kind" in
+            library) toolchain_library=$toolchain_first ;;
+            path) toolchain_path+=":$toolchain_first" ;;
+            env) toolchain_env+=(--env "$toolchain_first=$toolchain_second") ;;
+            *) die 'unexpected toolchain library output' ;;
+        esac
+    done <<<"$toolchain_output"
+    [[ "$toolchain_library" == /* ]] || die 'toolchain library check returned no library'
+fi
+
 # Restricted sessions use the shared helper; this wrapper keeps only the
 # agent-specific command, environment, state and credentials.
 session_helper=(python3 -I "$script_dir/network/session.py")
@@ -467,6 +507,7 @@ guard_digest=''
 if ((restricted)); then
     network_inputs=(--installation "$script_dir" --writable "$workspace_mount" --writable "$state_dir"
         --mount-target "$workspace_mount" --mount-target "$CONTAINER_HOME")
+    [[ -z "$toolchain_library" ]] || network_inputs+=(--mount-target /toolchains)
     if [[ "$network_mode" == provider ]]; then
         network_inputs+=(--policy "$ANTIGRAVITY_CONTAINER_NETWORK_POLICY"
             --profile "$ANTIGRAVITY_CONTAINER_NETWORK_PROFILE" --proxy-image "$ANTIGRAVITY_CONTAINER_EGRESS_IMAGE"
@@ -585,6 +626,25 @@ if ((restricted)); then
     [[ -z "$profile_credential" || ! -v "$profile_credential" ]] || container_args+=(--env "$profile_credential")
 else
     [[ ! -v GEMINI_API_KEY ]] || container_args+=(--env GEMINI_API_KEY)
+fi
+# Default toolchain entries follow the image PATH, so they never replace the
+# runtime's own node or python3; env.sh puts a toolchain first explicitly. The
+# toolchain environment precedes the protected values below: Podman keeps the
+# last --env, so AGY_CLI_DISABLE_AUTO_UPDATE=true wins. The shared module never
+# emits DBUS_SESSION_BUS_ADDRESS, which --unsetenv could not remove.
+if [[ -n "$toolchain_library" ]]; then
+    container_args+=(--volume "$toolchain_library:/toolchains:ro,nosuid,nodev")
+    if [[ -n "$toolchain_path" ]]; then
+        image_environment=$(podman image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$session_image") \
+            || die 'cannot inspect the runtime image environment'
+        image_path=''
+        while IFS= read -r image_variable; do
+            [[ "$image_variable" != PATH=* ]] || { image_path=${image_variable#PATH=}; break; }
+        done <<<"$image_environment"
+        [[ -n "$image_path" ]] || image_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        toolchain_env=(--env "PATH=$image_path$toolchain_path" "${toolchain_env[@]}")
+    fi
+    container_args+=("${toolchain_env[@]}")
 fi
 # Protected values follow forwarding: no bus or keyring, and no self-update.
 container_args+=(--unsetenv DBUS_SESSION_BUS_ADDRESS --env AGY_CLI_DISABLE_AUTO_UPDATE=true)

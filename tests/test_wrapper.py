@@ -3,6 +3,8 @@ import json
 import itertools
 import shutil
 import os
+import stat
+import sys
 from pathlib import Path
 import socket
 import signal
@@ -18,7 +20,7 @@ FAKE = (Path(__file__).resolve().parent / 'fake_podman.py').read_text()
 
 class WrapperTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(prefix='antigravity-wrapper-')
+        self.tmp = tempfile.TemporaryDirectory(prefix='antigravity-wrapper-', dir=os.environ.get('SANDBOX_TEST_TMPDIR'))
         self.addCleanup(self.tmp.cleanup)
         self.base = Path(self.tmp.name)
         self.bin = self.base / 'bin'
@@ -39,7 +41,11 @@ class WrapperTests(unittest.TestCase):
         self.env.update(PATH=str(self.bin) + ':' + self.env['PATH'],
                         FAKE_LOG=str(self.log), TMPDIR=str(self.diagnostics),
                         ANTIGRAVITY_CONTAINER_STATE_DIR=str(self.state),
-                        ANTIGRAVITY_CONTAINER_NETWORK='unrestricted')
+                        ANTIGRAVITY_CONTAINER_NETWORK='unrestricted',
+                        HOME=str(self.base / 'host-home'))
+        self.env.pop('XDG_DATA_HOME', None)
+        # The synthetic host home holds the default toolchain library.
+        self.library = self.base / 'host-home/.local/share/sandbox-toolchains'
         self.socket = socket.socket(socket.AF_UNIX)
         self.socket_path = self.base / 'podman.sock'
         self.socket.bind(str(self.socket_path))
@@ -128,8 +134,10 @@ class WrapperTests(unittest.TestCase):
         for option in ('--read-only', '--userns=keep-id', f'{os.getuid()}:{os.getgid()}'):
             self.assertIn(option, create)
         volumes = [create[i+1] for i, a in enumerate(create) if a == '--volume']
-        self.assertEqual(len(volumes), 2)
+        # The workspace, the state home and the read-only toolchain library.
+        self.assertEqual(len(volumes), 3)
         self.assertIn(f'{self.state}:/antigravity-home:rw', volumes)
+        self.assertIn(f'{self.library}:/toolchains:ro,nosuid,nodev', volumes)
 
     def test_insecure_existing_state_rejected(self):
         self.state.mkdir(mode=0o777)
@@ -889,7 +897,14 @@ class WrapperTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assert_refused(self.fresh_run(HOME=str(self.project),
                                                      ANTIGRAVITY_CONTAINER_ALLOW_UNSAFE_WORKSPACE=value), self.project)
+        # An exposed home contains the default toolchain library, which must
+        # never be mounted inside the workspace.
         result = self.fresh_run(HOME=str(self.project), ANTIGRAVITY_CONTAINER_ALLOW_UNSAFE_WORKSPACE='1')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(str(self.project / '.local/share/sandbox-toolchains'), result.stderr)
+        self.assertFalse(any(c[0] == 'create' for c in self.calls()))
+        result = self.fresh_run(HOME=str(self.project), ANTIGRAVITY_CONTAINER_ALLOW_UNSAFE_WORKSPACE='1',
+                                ANTIGRAVITY_CONTAINER_TOOLCHAINS='0')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f'WARNING: sensitive workspace explicitly exposed read/write: {self.project}', result.stderr)
         self.assertIn(f'{self.project}:{self.project}:rw', self.create())
@@ -920,7 +935,8 @@ class WrapperTests(unittest.TestCase):
         guard.chmod(0o700)
         (guard.parent / 'sandbox-egress-guard.sha256').write_text('c' * 64 + '  sandbox-egress-guard\n')
         for name in ('network/session.py', 'network/agent_profile.py', 'network/agent_budgets.py', 'network/policy.py', 'network/revisions.py',
-                     'network/platform_check.py', 'network/proxy_hardening.py', 'agent/profile.json'):
+                     'network/platform_check.py', 'network/proxy_hardening.py', 'agent/profile.json',
+                     'setup/common.py', 'setup/toolchains.py'):
             (install / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, install / name)
         record = ("import json,os,pathlib,sys\n"
@@ -1024,7 +1040,8 @@ class WrapperTests(unittest.TestCase):
         self.wrapper.chmod(0o755)
         for name in ('Containerfile', '.containerignore', 'container-entrypoint.sh'):
             shutil.copyfile(ROOT / name, install / name)
-        result = self.run_wrapper(FAKE_START_STDERR=restart)
+        # The bare copy has no setup/, so it starts without the toolchain library.
+        result = self.run_wrapper(FAKE_START_STDERR=restart, ANTIGRAVITY_CONTAINER_TOOLCHAINS='0')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('level=error msg="Should restart: false"', result.stderr)
 
@@ -1318,6 +1335,124 @@ class WrapperTests(unittest.TestCase):
             if 'credential_env' in item:
                 self.assertIn(f"\"$ANTIGRAVITY_CONTAINER_NETWORK_PROFILE\" != {item['policy_profile']} ]] "
                               f"|| profile_credential={item['credential_env']}", text)
+
+    # Toolchain library (adopt-sandbox-ref-16), adapted from the Pi port.
+    def volumes(self, create=None):
+        create = create or self.create()
+        return [create[i + 1] for i, a in enumerate(create[:-1]) if a == '--volume']
+
+    def toolchain_index(self, entries):
+        sys.path.insert(0, str(ROOT / 'setup'))
+        import toolchains
+        base = toolchains.base_reference(ROOT)
+        self.library.mkdir(parents=True, mode=0o700, exist_ok=True)
+        entry = {'version': '1', 'default': True, 'commands': ['tool'], 'requires': [], 'notes': [],
+                 'check': ['tool'], 'source': {}, 'verified': {'base': base, 'date': '2026-11-14'}}
+        (self.library / 'index.json').write_text(json.dumps(
+            {'schema': 1, 'toolchains': [{**entry, **value} for value in entries]}))
+
+    def test_toolchain_command_dispatch(self):
+        env = {k: v for k, v in self.env.items() if k != 'ANTIGRAVITY_CONTAINER_NETWORK'}
+        result = subprocess.run(['bash', str(WRAPPER), '--container-toolchain', 'list'], cwd=self.project, env=env,
+                                text=True, capture_output=True, timeout=25)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Toolchain library: ' + str(self.library), result.stdout)
+        self.assertIn('No toolchains are installed.', result.stdout)
+        self.assertEqual(self.calls(), [])
+        for args, message in ((('--version', '--container-toolchain', 'list'), 'must be the first argument'),
+                              (('--container-toolchain', 'launch-env'), 'usage'),
+                              (('--container-toolchain',), 'usage')):
+            with self.subTest(args=args):
+                result = self.fresh_run(*args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+                self.assertFalse(any(c[0] in ('create', 'build') for c in self.calls()))
+
+    def test_toolchain_library_created_private_and_mounted_read_only(self):
+        self.assertFalse(self.library.exists())
+        result = self.run_wrapper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(stat.S_IMODE(self.library.stat().st_mode), 0o700)
+        self.assertIn('No toolchains are installed', (self.library / 'toolchains.md').read_text())
+        self.assertIn(f'{self.library}:/toolchains:ro,nosuid,nodev', self.volumes())
+        self.assertFalse(any(e.startswith('PATH=') for e in self.env_values(self.create())))
+
+    def test_unsafe_toolchain_library_stops_before_engine_operations(self):
+        self.library.mkdir(parents=True, mode=0o700)
+        os.chmod(self.library, 0o755)
+        isolated = self.base / 'isolated'
+        shared = self.base / 'host-home/.gemini'
+        cases = [({}, str(self.library))]
+        cases += [({'ANTIGRAVITY_CONTAINER_TOOLCHAINS_DIR': str(path)}, str(path))
+                  for path in (self.project / 'tools', self.base, self.state / 'tools')]
+        cases.append(({'ANTIGRAVITY_CONTAINER_TOOLCHAINS_DIR': str(self.project.parent / 'tools')},
+                      str(self.project.parent / 'tools'), '--container-git-worktree'))
+        cases.append(({'ANTIGRAVITY_CONTAINER_STATE_DIR': str(isolated),
+                       'ANTIGRAVITY_CONTAINER_TOOLCHAINS_DIR': str(isolated / 'tools')}, str(isolated / 'tools')))
+        cases.append(({'ANTIGRAVITY_CONTAINER_STATE_DIR': '',
+                       'ANTIGRAVITY_CONTAINER_TOOLCHAINS_DIR': str(shared / 'tools')}, str(shared / 'tools')))
+        cases.append(({'ANTIGRAVITY_CONTAINER_STATE_DIR': '', 'ANTIGRAVITY_CONTAINER_CONFIG_DIR': str(self.base / 'config'),
+                       'ANTIGRAVITY_CONTAINER_TOOLCHAINS_DIR': str(self.base / 'config/tools')},
+                      str(self.base / 'config/tools')))
+        for case in cases:
+            env, path, *args = case
+            with self.subTest(env=env, args=args):
+                result = self.fresh_run(*args, **env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(path, result.stderr)
+                self.assertFalse(any(c[0] in ('create', 'build', 'image', 'pull') for c in self.calls()))
+
+    def test_toolchain_mount_can_be_disabled(self):
+        for value in ('0', 'false', 'no'):
+            with self.subTest(value=value):
+                result = self.fresh_run(ANTIGRAVITY_CONTAINER_TOOLCHAINS=value)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(any(v.endswith(':/toolchains:ro,nosuid,nodev') for v in self.volumes()))
+                self.assertFalse(self.library.exists())
+        result = self.fresh_run(ANTIGRAVITY_CONTAINER_TOOLCHAINS='maybe')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('ANTIGRAVITY_CONTAINER_TOOLCHAINS', result.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_default_toolchain_environment_is_appended(self):
+        self.toolchain_index([
+            {'name': 'current', 'path': ['/toolchains/current/bin'], 'env': {'CURRENT_HOME': '/toolchains/current'}},
+            {'name': 'stale', 'path': ['/toolchains/stale/bin'], 'env': {},
+             'verified': {'base': 'docker.io/library/other@sha256:' + 'e' * 64, 'date': '2026-11-14'}}])
+        result = self.run_wrapper(FAKE_IMAGE_ENV='PATH=/usr/bin:/bin\nNODE_VERSION=22')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        environment = self.env_values(self.create())
+        self.assertIn('PATH=/usr/bin:/bin:/toolchains/current/bin', environment)
+        self.assertIn('CURRENT_HOME=/toolchains/current', environment)
+        self.assertFalse(any('/toolchains/stale' in e for e in environment))
+        self.assertEqual(result.stderr.count('toolchain stale was verified on another base image'), 1)
+        self.assertIn('verify stale', result.stderr)
+
+    def test_antigravity_settings_win_over_toolchain_variables(self):
+        # A toolchain may name a setting outside the protected set; the
+        # launcher's own value comes later and wins (Podman keeps the last --env).
+        self.toolchain_index([{'name': 'noisy', 'path': ['/toolchains/noisy/bin'],
+                               'env': {'AGY_CLI_DISABLE_AUTO_UPDATE': 'false'}}])
+        result = self.run_wrapper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        environment = self.env_values(self.create())
+        self.assertIn('AGY_CLI_DISABLE_AUTO_UPDATE=false', environment)
+        self.assertEqual([e for e in environment if e.startswith('AGY_CLI_DISABLE_AUTO_UPDATE=')][-1],
+                         'AGY_CLI_DISABLE_AUTO_UPDATE=true')
+
+    def test_restricted_sessions_declare_the_toolchain_mount(self):
+        values = self.restricted_fixture()
+        self.toolchain_index([])
+        for mode in ('offline', 'provider'):
+            with self.subTest(mode=mode):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(**(values | {'ANTIGRAVITY_CONTAINER_NETWORK': mode}))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                agent = self.creates()[-1]
+                self.assertIn(f'{self.library}:/toolchains:ro,nosuid,nodev', self.volumes(agent))
+                control = [c for c in self.calls() if c[0] == 'control.py']
+                self.assertTrue(any(c[i:i + 2] == ['--mount-target', '/toolchains']
+                                    for c in control for i in range(len(c) - 1)), control)
 
 if __name__ == '__main__':
     unittest.main()
