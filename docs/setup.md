@@ -1,10 +1,16 @@
 # Interactive sandbox setup
 
 The durable contract is [container-setup](../openspec/specs/container-setup/spec.md).
-It is copied unchanged from `claude-container` at tag `sandbox-ref-12`
+It is copied unchanged from `claude-container` at tag `sandbox-ref-17`
 (`setup/`); Antigravity values come from `agent/profile.json`. The archived change
 `openspec/changes/archive/<date>-add-container-setup/` retains the design, tasks
 and delta specifications.
+
+The toolchain library (`adopt-sandbox-ref-17`) changes the wrapper and adds
+`setup/toolchains.py` to the installed and qualified code, so rerun
+`--container-setup` after upgrading. Setup does not manage toolchains: the
+operator adds them with `--container-toolchain`, and every session mounts the
+library read-only at `/toolchains` (see the README "Toolchains" section).
 
 Setup is the mandatory first step for new users. Run
 `bash ./antigravity-container.sh --container-setup` from a reviewed checkout,

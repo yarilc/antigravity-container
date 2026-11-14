@@ -69,4 +69,6 @@ podman run --rm --interactive --userns=keep-id --user "$(id -u):$(id -g)" \
     --env "SANDBOX_TEST_STATE_ROOT=$native_root" "${guard_environment[@]}" \
     --env "ANTIGRAVITY_CONTAINER_IMAGE=$image" --env HOME=/tmp \
     --tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777 \
+    --mount type=tmpfs,destination=/sandbox-test-tmp,tmpfs-mode=0700,U=true,tmpfs-size=1g \
+    --env SANDBOX_TEST_TMPDIR=/sandbox-test-tmp \
     --entrypoint python3 "$image" -B -m unittest "${selection[@]}" "$@"

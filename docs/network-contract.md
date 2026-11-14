@@ -18,7 +18,7 @@ in `openspec/specs/`.
 ## Reference and intentional differences
 
 The shared components are copied unchanged from `claude-container` at tag
-`sandbox-ref-12` (commit `fd196c9de038ca3ba9cb1b5d8af43d28da9dccd5`):
+`sandbox-ref-17` (commit `a23f155b6c4af393e96c9496ea2025d2b59c1380`):
 
 - `network/` (except the build output `network/bin/`);
 - `setup/`;
@@ -185,11 +185,11 @@ The same Antigravity row appears in `claude-container`, `codex-container`,
 
 | Wrapper | Contract adoption | Implementation | Real enforcement | Auth compatibility |
 | --- | --- | --- | --- | --- |
-| Claude | Reference (`sandbox-ref-12`) | Mandatory bootstrap, multiplexed proxy and guided setup integrated | See the Claude validation record | Account login, reuse and refresh passed; operator session with tool use passed (2026-11-11, `anthropic-account`); real-key API unavailable |
-| Codex | Ported from `sandbox-ref-12`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-09) | Operator session with tool use passed (2026-11-11, `openai-account`); refresh and API-key checks pending; synthetic Responses API streaming and tool call passed |
-| Antigravity | Ported from `sandbox-ref-12`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated; keyring removed | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Operator session with tool use passed (2026-11-11, `google-account`, policy `antigravity-2026-11-11-v2`); refresh and Gemini API-key checks pending; synthetic Gemini streaming and tool call passed |
-| OpenCode | Ported from `sandbox-ref-12`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Operator session with tool use passed (2026-11-11, `anthropic-api`); the other three profiles pending; synthetic Chat Completions streaming and tool call passed |
-| Pi | Ported from `sandbox-ref-12`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Operator session with tool use passed (2026-11-11, `anthropic-api`); the other three profiles pending; synthetic Chat Completions streaming and tool call passed |
+| Claude | Reference (`sandbox-ref-17`) | Mandatory bootstrap, multiplexed proxy and guided setup integrated | See the Claude validation record | Account login, reuse and refresh passed; operator session with tool use passed (2026-11-11, `anthropic-account`); real-key API unavailable |
+| Codex | Ported from `sandbox-ref-17`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-09) | Operator session with tool use passed (2026-11-11, `openai-account`); refresh and API-key checks pending; synthetic Responses API streaming and tool call passed |
+| Antigravity | Ported from `sandbox-ref-17`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated; keyring removed | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Operator session with tool use passed (2026-11-11, `google-account`, policy `antigravity-2026-11-11-v2`); refresh and Gemini API-key checks pending; synthetic Gemini streaming and tool call passed |
+| OpenCode | Ported from `sandbox-ref-17`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Operator session with tool use passed (2026-11-11, `anthropic-api`); the other three profiles pending; synthetic Chat Completions streaming and tool call passed |
+| Pi | Ported from `sandbox-ref-17`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Operator session with tool use passed (2026-11-11, `anthropic-api`); the other three profiles pending; synthetic Chat Completions streaming and tool call passed |
 
 ## Port status
 

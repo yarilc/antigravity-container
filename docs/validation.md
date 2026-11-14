@@ -694,3 +694,94 @@ tmpfs without the extra `noexec`. On Podman 4.9 it stays read-only.
 
 Every restricted installation must rebuild and rerun setup. The project is
 not distributed, so the operator may clean existing state instead.
+
+## Adoption of `sandbox-ref-17` and the toolchain library (`adopt-sandbox-ref-17`): 2026-11-14
+
+Copied from `claude-container` tag `sandbox-ref-17` (commit `a23f155`),
+adopted directly from `sandbox-ref-12`:
+`network/agent_profile.py`, `network/control.py`,
+`network/qualification_records.py`, `setup/common.py`,
+`tests/test_alignment.py`, `tests/test_qualification.py`,
+`setup/toolchains.py`, `tests/test_toolchains.py`.
+The `tests/test_reference_copy.py` manifest moved to the tag.
+
+A first apply of this change targeted `sandbox-ref-16` and was paused before
+any commit. In the real-engine check, a toolchain that set
+`DBUS_SESSION_BUS_ADDRESS` reached the session. On this host's engine
+(Podman server 4.9.3), `--unsetenv` does not remove a value given with
+`--env`. The reference fixed this in `sandbox-ref-17`:
+
+- the bus variable is protected in every wrapper;
+- a variable protected only by another wrapper's profile is left out of the
+  session with a warning, instead of stopping every launch.
+
+The uncommitted branch was discarded, and its wrapper-owned work was
+reapplied as a patch on the regenerated branch.
+
+Wrapper port of the reference toolchain library (claude-container
+`add-toolchain-library`; Codex `adopt-sandbox-ref-14`, OpenCode and Pi
+`adopt-sandbox-ref-16`):
+
+- `--container-toolchain add|list|remove|verify`, dispatched before the
+  network mode and accepted only as the first argument;
+- `ANTIGRAVITY_CONTAINER_TOOLCHAINS`, parsed like the other boolean settings,
+  and `ANTIGRAVITY_CONTAINER_TOOLCHAINS_DIR`;
+- the library checked against the workspace (or worktree parent) and the one
+  writable state directory (the dedicated or isolated home, or the shared
+  `~/.gemini` or `ANTIGRAVITY_CONTAINER_CONFIG_DIR`) before any image or
+  container operation. It is skipped for the qualification probe;
+- the read-only `/toolchains` mount (`ro,nosuid,nodev`), with
+  `--mount-target /toolchains` in restricted modes;
+- default toolchain `PATH` entries appended after the image `PATH`, read from
+  the session image's `.Config.Env`;
+- the toolchain environment placed before `AGY_CLI_DISABLE_AUTO_UPDATE=true`,
+  so the launcher's value wins.
+
+The README has a "Toolchains" section. Its instruction line names `GEMINI.md`
+or `AGENTS.md`: the `agy` binary of the current image contains both names,
+and which files it loads was not verified without credentials. The example
+recipes are linked in claude-container.
+
+`tests/run-runtime.sh` mounts a private executable tmpfs at
+`/sandbox-test-tmp` as `SANDBOX_TEST_TMPDIR`, and `tests/test_wrapper.py`
+creates its fixtures there.
+
+Fixture adaptations required by the new mount:
+
+- `tests/test_wrapper.py`:
+  - the setup sets a synthetic `HOME` below the base, so the default library
+    never lands in the caller's real home;
+  - an exposed home (unsafe-workspace override) stops on the library overlap,
+    and passes with `ANTIGRAVITY_CONTAINER_TOOLCHAINS=0`;
+  - the bare copy without the diagnostics filter has no `setup/`, so it runs
+    with `ANTIGRAVITY_CONTAINER_TOOLCHAINS=0`;
+  - the host-mount count is three (workspace, state home, library);
+  - the restricted fixture installs `setup/common.py` and
+    `setup/toolchains.py`;
+- `tests/fake_podman.py` answers the image `.Config.Env` inspection;
+- `tests/test_runtime.py`: each test gives the wrapper a private home on the
+  native state root, because the runner's `HOME=/tmp` is world-writable and
+  the library refuses it;
+- `tests/test_network_runtime.py`: the installation gains `setup/common.py`
+  and `setup/toolchains.py`.
+
+| Check | Result |
+| --- | --- |
+| New `tests/test_wrapper.py` cases with the launcher of `main` | Failed as intended (dispatch, private creation and mount, unsafe library including the worktree parent and the three state modes, disabled mount, appended `PATH`, `AGY_CLI_DISABLE_AUTO_UPDATE` order, restricted `--mount-target`, home workspace overlap, mount count) |
+| `python3 -m unittest tests.test_reference_copy tests.test_toolchains tests.test_alignment` (private tmpfs), including the agent-identifier scans and profile variables | Passed: 38 tests |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 386 tests, 76 skipped (the runtime tests are opt-in) |
+| `bash tests/run-runtime.sh --shared` | Passed: 168 tests, 28 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 71 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 5 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 28 tests |
+| `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped (the 305-second idle check) |
+| `bash tests/run-runtime.sh --network` | Passed: 22 tests, including a toolchain added on the host during an offline session, usable without direct network |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 76 tests |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 20 tests, including archive and image sources, a failing check, the read-only mount, the image's `node` and `python3` kept first, `AGY_CLI_DISABLE_AUTO_UPDATE=true` kept against a toolchain, and the omitted mount |
+| Timing-sensitive checks | `test_lifetime_argument_and_notice` (synthetic) and `test_session_lifetime_limit_and_early_exit` (real engine) each failed once during development: exit status 255 without the lifetime notice. Both are unchanged by this adoption; each passed three isolated reruns and the full runs above |
+| Five-wrapper parity table | Identical to claude-container's (`sandbox-ref-17`) |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host, `java -version` with the Temurin 21 toolchain, and `--container-toolchain verify java21` | Pending |
+
+Runtime image: `localhost/antigravity-cli:setup-cf551a6ade444811a7d732156d5aa0c0`
+as `ANTIGRAVITY_CONTAINER_IMAGE`. Qualification digests the launcher and
+`setup/toolchains.py`, so restricted installations rerun `--container-setup`.
