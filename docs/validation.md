@@ -785,3 +785,67 @@ Fixture adaptations required by the new mount:
 Runtime image: `localhost/antigravity-cli:setup-cf551a6ade444811a7d732156d5aa0c0`
 as `ANTIGRAVITY_CONTAINER_IMAGE`. Qualification digests the launcher and
 `setup/toolchains.py`, so restricted installations rerun `--container-setup`.
+
+## Adoption of `sandbox-ref-18`: 2026-11-15
+
+Copied from `claude-container` tag `sandbox-ref-18` (commit `958465b`):
+`network/agent_profile.py`, `setup/common.py`, `setup/toolchains.py`,
+`tests/test_agent_profile.py`, `tests/test_alignment.py`, `tests/test_setup.py`,
+`tests/test_toolchains.py`.
+The `tests/test_reference_copy.py` manifest moved to the tag.
+
+`sandbox-ref-18` adds the optional profile field `native.protected_env`, runs
+the toolchain check in `/`, refuses an isolated state directory that overlaps
+the workspace on managed launches, and makes the alignment test check the
+launcher's code and its help text separately. The shared tests passed
+without adapting an Antigravity fixture.
+
+Antigravity changes, from the cross-wrapper review of 2026-11-14:
+
+- **Agent variables:** `agent/profile.json` declares `AGY_`, `ANTIGRAVITY_`,
+  `GEMINI_` and `GOOGLE_API_KEY`. A default toolchain could previously set
+  `GEMINI_BASE_URL` or other `AGY_` controls in Antigravity sessions;
+  `launch-env` now leaves them out with a warning, and `add` rejects them.
+  `AGY_CLI_DISABLE_AUTO_UPDATE` is now dropped from the toolchain
+  environment instead of only being overridden later, so
+  `test_antigravity_settings_win_over_toolchain_variables` in
+  `tests/test_wrapper.py` expects the toolchain value to be absent with one
+  warning, and its `tests/test_runtime.py` counterpart expects `add` to
+  reject the recipe and the session to keep `true`.
+- **Name collisions (M2):** after a failed create without an ID, an existing
+  container with the candidate name is a collision only when its session
+  label differs. This session's own container is reported as the creation
+  failure and removed in cleanup, instead of being left behind while the
+  wrapper tried the next name.
+- **Label recovery (M2):** when creation was interrupted or failed without a
+  published ID, cleanup looks up the session label (`ps --all --no-trunc
+  --filter label=…`), confirms exactly one ID by inspecting its label, and
+  removes it. A failed lookup, several IDs or an unconfirmed label keep the
+  "creation outcome unresolved" report.
+- **Client wait:** `wait_for_client_until` polls `child_running` instead of
+  `kill -0`, as Codex and Pi do.
+
+`tests/fake_podman.py` now answers the session-label lookup and label
+inspection. The new tests (`test_toolchain_cannot_set_agent_variables`,
+`test_owned_name_is_not_a_collision`,
+`test_interrupted_creation_is_recovered_by_label`) fail on `main` and pass on
+the branch.
+
+| Check | Result |
+| --- | --- |
+| `shellcheck antigravity-container.sh` | Same warning as on `main` (SC2054) |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 393 tests, 77 skipped |
+| `bash tests/run-runtime.sh --shared` | Passed: 169 tests, 28 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 72 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 5 tests |
+| `bash tests/run-runtime.sh --qualification` (not in the tool's checklist; shared `setup/` modules are qualified code) | Passed: 28 tests |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 79 tests (after adapting the settings test) |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 20 tests (after adapting the settings test) |
+| Five-wrapper parity table | Identical to claude-container's (`sandbox-ref-18`) |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending |
+
+Runtime image: setup image `0c215fe6ecee`
+(`localhost/antigravity-cli:setup-cf551a6a…`), tagged
+`localhost/antigravity-cli:latest` only for the runs and untagged by name
+afterwards. Shared qualified code changes, so restricted installations rerun
+`--container-setup`.

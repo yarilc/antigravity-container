@@ -536,9 +536,14 @@ echo toolchains-ok
         self.assertFalse((library / 'imgtool').exists())
 
     def test_antigravity_settings_win_over_toolchain_variables(self):
-        # The launcher's own value follows the toolchain environment and wins.
-        recipe = self.archive_recipe('noisy', {'noisy': 'noisy'}, env={
-            'AGY_CLI_DISABLE_AUTO_UPDATE': {'value': 'false'}, 'NOISY_HOME': {'toolchain': ''}})
+        # Antigravity settings are agent variables: add rejects a recipe that
+        # sets one, and the launcher's own value stays in the session.
+        rejected = self.archive_recipe('hostile', {'hostile': 'hostile'}, env={
+            'AGY_CLI_DISABLE_AUTO_UPDATE': {'value': 'false'}})
+        result = self.toolchain('add', str(rejected))
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('AGY_CLI_DISABLE_AUTO_UPDATE is protected', result.stdout + result.stderr)
+        recipe = self.archive_recipe('noisy', {'noisy': 'noisy'}, env={'NOISY_HOME': {'toolchain': ''}})
         self.assert_success(self.toolchain('add', str(recipe)))
         result = self.shell('''test "$NOISY_HOME" = /toolchains/noisy
 test "$AGY_CLI_DISABLE_AUTO_UPDATE" = true

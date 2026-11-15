@@ -21,7 +21,8 @@
     "config_dir_env": "ANTIGRAVITY_CONTAINER_CONFIG_DIR",
     "approval_bypass_env": "ANTIGRAVITY_YOLO",
     "config_home": ".gemini",
-    "shared_dirs": []
+    "shared_dirs": [],
+    "protected_env": ["AGY_", "ANTIGRAVITY_", "GEMINI_", "GOOGLE_API_KEY"]
   },
   "auth": {
     "account": {

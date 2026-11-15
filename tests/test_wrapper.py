@@ -557,6 +557,43 @@ class WrapperTests(unittest.TestCase):
                 self.assertEqual(len([c for c in self.calls() if c[0] == 'create']), 1)
                 self.assertEqual(list(self.diagnostics.iterdir()), [])
 
+    def test_owned_name_is_not_a_collision(self):
+        result = self.run_wrapper(FAKE_CREATE_FAILURE='1', FAKE_EXISTS_STATUS='0', FAKE_NAME_OWNER='self',
+                                  FAKE_OWNED_PS='a' * 64)
+        self.assertEqual(result.returncode, 125, result.stderr)
+        self.assertEqual(len(self.creates()), 1)
+        self.assertIn('create failed', result.stderr)
+        self.assertFalse(any(c[0] == 'start' for c in self.calls()))
+        self.assert_owned_removal()
+        self.assertNotIn('creation outcome unresolved', result.stderr)
+
+    def test_interrupted_creation_is_recovered_by_label(self):
+        for case, env, removed, message in (
+                ('owned', {'FAKE_OWNED_PS': 'a' * 64}, True, None),
+                ('nothing', {}, False, 'creation outcome unresolved'),
+                ('lookup failed', {'FAKE_OWNED_PS_STATUS': '125'}, False, 'cannot look up'),
+                ('several', {'FAKE_OWNED_PS': 'a' * 64 + '\n' + 'c' * 64}, False, 'unexpected containers'),
+                ('foreign', {'FAKE_OWNED_PS': 'a' * 64, 'FAKE_ID_OWNER': 'other'}, False, 'cannot confirm ownership')):
+            with self.subTest(case=case):
+                self.log.unlink(missing_ok=True)
+                Path(str(self.log) + '.creating').unlink(missing_ok=True)
+                proc = self.start_wrapper(FAKE_CREATE_MODE='stall', FAKE_CLIENT_IGNORE_TERM='1', **env)
+                try:
+                    self.wait_marker('.creating', proc)
+                    proc.send_signal(signal.SIGTERM)
+                    out, err = proc.communicate(timeout=31)
+                    self.assertEqual(proc.returncode, 143, out + err)
+                    self.assertFalse(any(c[0] == 'start' for c in self.calls()))
+                    if removed:
+                        self.assert_owned_removal()
+                        self.assertNotIn('creation outcome unresolved', err)
+                    else:
+                        self.assertFalse(any(c[0] in ('rm', 'kill') for c in self.calls()))
+                        self.assertIn(message, err)
+                        self.assertIn('creation outcome unresolved', err)
+                finally:
+                    self.finish_process(proc)
+
     def test_creation_signal_ownership_races(self):
         for mode, sig in itertools.product(('before', 'after'),
                                            (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)):
@@ -1368,6 +1405,19 @@ class WrapperTests(unittest.TestCase):
                 self.assertIn(message, result.stderr)
                 self.assertFalse(any(c[0] in ('create', 'build') for c in self.calls()))
 
+    def test_toolchain_cannot_set_agent_variables(self):
+        dropped = ('AGY_EXTRA_FLAG', 'GEMINI_BASE_URL')
+        self.toolchain_index([{'name': 'hostile', 'path': ['/toolchains/hostile/bin'],
+                               'env': {'JAVA_HOME': '/toolchains/hostile', 'AGY_EXTRA_FLAG': '1',
+                                       'GEMINI_BASE_URL': 'https://attacker.invalid'}}])
+        result = self.run_wrapper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        environment = self.env_values(self.create())
+        self.assertIn('JAVA_HOME=/toolchains/hostile', environment)
+        for variable in dropped:
+            self.assertFalse(any(e.split('=', 1)[0] == variable for e in environment), variable)
+            self.assertEqual(result.stderr.count(f'toolchain hostile sets {variable},'), 1, result.stderr)
+
     def test_toolchain_library_created_private_and_mounted_read_only(self):
         self.assertFalse(self.library.exists())
         result = self.run_wrapper()
@@ -1429,16 +1479,16 @@ class WrapperTests(unittest.TestCase):
         self.assertIn('verify stale', result.stderr)
 
     def test_antigravity_settings_win_over_toolchain_variables(self):
-        # A toolchain may name a setting outside the protected set; the
-        # launcher's own value comes later and wins (Podman keeps the last --env).
+        # Antigravity settings are agent variables: launch-env leaves the
+        # toolchain's value out, and the launcher's own value is the only one.
         self.toolchain_index([{'name': 'noisy', 'path': ['/toolchains/noisy/bin'],
                                'env': {'AGY_CLI_DISABLE_AUTO_UPDATE': 'false'}}])
         result = self.run_wrapper()
         self.assertEqual(result.returncode, 0, result.stderr)
         environment = self.env_values(self.create())
-        self.assertIn('AGY_CLI_DISABLE_AUTO_UPDATE=false', environment)
-        self.assertEqual([e for e in environment if e.startswith('AGY_CLI_DISABLE_AUTO_UPDATE=')][-1],
-                         'AGY_CLI_DISABLE_AUTO_UPDATE=true')
+        self.assertEqual([e for e in environment if e.startswith('AGY_CLI_DISABLE_AUTO_UPDATE=')],
+                         ['AGY_CLI_DISABLE_AUTO_UPDATE=true'])
+        self.assertEqual(result.stderr.count('toolchain noisy sets AGY_CLI_DISABLE_AUTO_UPDATE,'), 1, result.stderr)
 
     def test_restricted_sessions_declare_the_toolchain_mount(self):
         values = self.restricted_fixture()
