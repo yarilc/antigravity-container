@@ -44,6 +44,10 @@ elif args[0] == 'exec' and args[1] == proxy:
     print(os.environ.get('FAKE_PROXY_EFFECTIVE', '{"pids":128,"memory":268435456,"capabilities":[0,0,0,0,0],"no_new_privs":1,"seccomp":2}'))
 elif args[0] in ('start', 'rm') and args[-1] == proxy:
     sys.exit(0)
+elif args[0] == 'ps' and any(a.startswith('label=io.antigravity-container.session=') for a in args):
+    # Containers this session owns, looked up when no ID was published.
+    print(os.environ.get('FAKE_OWNED_PS', ''))
+    sys.exit(int(os.environ.get('FAKE_OWNED_PS_STATUS', '0')))
 elif args[0] == 'ps' and '--filter' in args:
     print('')
 elif args[:2] == ['--remote', '--url']:
@@ -100,6 +104,14 @@ elif args[0] == 'create':
 elif args[:2] == ['container', 'exists']:
     default = '0' if os.environ.get('FAKE_COLLISION') or os.environ.get('FAKE_ALL_COLLISIONS') else '1'
     sys.exit(int(os.environ.get('FAKE_EXISTS_STATUS', default)))
+elif args[0] == 'inspect' and any('.Config.Labels' in a for a in args):
+    # Owner label: a name defaults to another session, a full ID to this one.
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    token = next(a.split('=', 1)[1] for c in calls if c[0] == 'create' for a in c
+                 if a.startswith('io.antigravity-container.session='))
+    is_id = len(args[-1]) == 64
+    owner = os.environ.get('FAKE_ID_OWNER' if is_id else 'FAKE_NAME_OWNER', 'self' if is_id else 'other')
+    print(token if owner == 'self' else 'other-session')
 elif args[0] == 'inspect':
     if 'FAKE_AGENT_BUDGETS' in os.environ:
         print(os.environ['FAKE_AGENT_BUDGETS'])

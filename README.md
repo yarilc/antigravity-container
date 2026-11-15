@@ -494,12 +494,13 @@ A recipe is a JSON file that the operator keeps and reviews:
   sets). These rules are the same in every wrapper. Each wrapper also
   protects its own variables: its prefix, configuration, approval and
   credential variables, such as `ANTIGRAVITY_CONTAINER_*`, `ANTIGRAVITY_YOLO`
-  and `GEMINI_API_KEY` here. `add` rejects them. If another wrapper installed
-  a toolchain that sets one, this wrapper leaves that variable out of its
-  sessions and prints a warning naming the toolchain; the rest of the
-  toolchain stays available. The launcher sets
-  `AGY_CLI_DISABLE_AUTO_UPDATE=true` after the toolchain environment, so a
-  toolchain cannot override it.
+  and `GEMINI_API_KEY` here, and the agent's own variables that its profile
+  lists in `native.protected_env`. For Antigravity these are every `AGY_`,
+  `ANTIGRAVITY_` and `GEMINI_` variable and `GOOGLE_API_KEY`. `add` rejects
+  them. If another wrapper installed a toolchain that sets one, this wrapper
+  leaves that variable out of its sessions and prints a warning naming the
+  toolchain; the rest of the toolchain stays available. The launcher also
+  sets `AGY_CLI_DISABLE_AUTO_UPDATE=true` after the toolchain environment.
 - **Default toolchains:** in new sessions, their `PATH` entries come **after**
   the image's. They never replace the runtime's own `node` or `python3`, which
   `agy` and the image tools use.

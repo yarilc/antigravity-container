@@ -682,6 +682,9 @@ qualification_check_pid=''
 session_start_pid=''
 diagnostics_pid=''
 diagnostics_fd=''
+session_token=''
+ownership_label=io.antigravity-container.session
+owned_collision=0
 
 # shellcheck disable=SC2329 # Invoked by signal traps.
 record_signal() {
@@ -728,7 +731,7 @@ reap_helper() {
 # shellcheck disable=SC2329 # Called by EXIT cleanup and its client reaper.
 wait_for_client_until() {
     local deadline=$1
-    while kill -0 "$client_pid" 2>/dev/null; do
+    while child_running "$client_pid"; do
         ((SECONDS < deadline)) || return 1
         sleep 0.05
     done
@@ -762,6 +765,29 @@ recover_container_id() {
     container_id=$recovered
 }
 
+# Exactly one ID whose label inspection confirms the token is adopted.
+# shellcheck disable=SC2329 # Called by EXIT cleanup.
+recover_container_by_label() {
+    local ids owner
+    [[ -z "$container_id" && -n "$session_token" ]] || return 0
+    if ! ids=$(timeout --kill-after=1s 5s podman ps --all --no-trunc \
+        --filter "label=$ownership_label=$session_token" --format '{{.ID}}'); then
+        printf 'antigravity-container: cannot look up the containers of session %s by label\n' "$session_token" >&2
+        return 1
+    fi
+    [[ -n "$ids" ]] || return 1
+    if [[ ! "$ids" =~ ^[a-f0-9]{64}$ ]]; then
+        printf 'antigravity-container: unexpected containers for session %s; inspect the engine manually\n' "$session_token" >&2
+        return 1
+    fi
+    if ! owner=$(timeout --kill-after=1s 5s podman inspect --type container \
+        --format "{{index .Config.Labels \"$ownership_label\"}}" "$ids") || [[ "$owner" != "$session_token" ]]; then
+        printf 'antigravity-container: cannot confirm ownership of container %s\n' "$ids" >&2
+        return 1
+    fi
+    container_id=$ids
+}
+
 # shellcheck disable=SC2329 # Invoked by the EXIT trap.
 cleanup() {
     local status=$? control_status=0 shutdown_deadline
@@ -788,7 +814,9 @@ cleanup() {
         fi
         # A CID can be published while the local client is being cancelled.
         recover_container_id || true
-        if ((pending_status)) && [[ -z "$container_id" ]]; then
+        # The engine can create the container before the client publishes an ID.
+        [[ -n "$container_id" ]] || recover_container_by_label || true
+        if { ((pending_status)) || ((owned_collision)); } && [[ -z "$container_id" ]]; then
             printf 'antigravity-container: creation outcome unresolved for %s; inspect the engine manually (no verified owned ID)\n' "$name" >&2
         fi
     fi
@@ -835,6 +863,7 @@ if [[ "$network_mode" == provider ]]; then
 else
     session_tmp=$(umask 077; mktemp -d) || die 'cannot create private session bookkeeping directory'
 fi
+session_token=${session_tmp##*/}
 (umask 077; : > "$session_tmp/output"; : > "$session_tmp/error")
 ((pending_status == 0)) || exit "$pending_status"
 printf 'antigravity-container: network mode=%s\n' "$network_mode" >&2
@@ -893,7 +922,7 @@ for ((attempt=0; attempt<20; attempt++)); do
     rm -f -- "$session_tmp/cid"
     creating=1
     podman create --name "$name" --cidfile "$session_tmp/cid" \
-        --label "io.antigravity-container.session=${session_tmp##*/}" \
+        --label "$ownership_label=$session_token" \
         "${container_args[@]}" "$session_image" "${args[@]}" \
         </dev/null >"$session_tmp/output" 2>"$session_tmp/error" &
     client_pid=$!
@@ -914,7 +943,20 @@ for ((attempt=0; attempt<20; attempt++)); do
     podman container exists "$name" || exists_status=$?
     ((pending_status == 0)) || exit "$pending_status"
     case "$exists_status" in
-        0) next_index=$((next_index + 1)) ;;
+        0)
+            # Only another session's container is a collision; this session's own
+            # is reported as the creation failure and removed during cleanup.
+            owner_status=0
+            owner=$(podman inspect --type container --format "{{index .Config.Labels \"$ownership_label\"}}" "$name") \
+                || owner_status=$?
+            ((pending_status == 0)) || exit "$pending_status"
+            ((owner_status == 0)) || die "cannot verify container name collision for $name (status $owner_status)"
+            if [[ "$owner" == "$session_token" ]]; then
+                owned_collision=1
+                creating=1
+                exit "$create_status"
+            fi
+            next_index=$((next_index + 1)) ;;
         1) exit "$create_status" ;;
         *) die "cannot verify container name collision for $name (status $exists_status)" ;;
     esac
