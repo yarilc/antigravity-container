@@ -849,3 +849,44 @@ Runtime image: setup image `0c215fe6ecee`
 `localhost/antigravity-cli:latest` only for the runs and untagged by name
 afterwards. Shared qualified code changes, so restricted installations rerun
 `--container-setup`.
+
+## Adoption of `sandbox-ref-20`: 2026-11-16
+
+`sandbox-container` is now the reference (it replaced `claude-container`).
+Copied from `sandbox-container` tag `sandbox-ref-20` (commit `d4fd4ca`) with
+`tools/propagate.py`: `network/README.md`, `network/agent_profile.py`,
+`network/policy.py`, `network/qualification_records.py`, `network/qualify.py`,
+`network/session.py`, `setup/common.py`, `setup/setup.py`, `setup/toolchains.py`,
+`tests/sandbox_profile.py`, `tests/test_agent_profile.py`, `tests/test_alignment.py`,
+`tests/test_guard.py`, `tests/test_qualification.py`, `tests/test_session.py`,
+`tests/test_setup.py` and the fixture profiles in `tests/fixtures/`. The
+`tests/test_reference_copy.py` manifest moved to the tag and names
+`sandbox-container` as its sibling. Per-agent: `tests/test_setup_wrapper.py`
+(copied from Claude), the lifetime notice measured with a monotonic clock
+(`/proc/uptime`) from just before container creation plus a boundary test,
+documents pointing at `sandbox-container`, parity table fixed by hand.
+
+The first full run used the `EPOCHREALTIME` launcher: the default mode failed
+`test_session_lifetime_limit_and_early_exit` (real 3 s expiry, status 255, no
+notice), 2 of 10 isolated reruns failed the same way. WSL2 steps the wall clock
+backwards (1.84 s measured), so the launcher now uses `/proc/uptime`; with it the
+test passed 10 of 10 isolated runs, and the modes that run the launcher were
+rerun.
+
+Runtime image: `localhost/antigravity-cli:setup-9a4baafd86354976a2f08d429d70b0de`;
+WSL2 6.6.87.2, Podman 4.9.3.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 411 tests, 75 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 66 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 5 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 28 tests |
+| `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped |
+| `bash tests/run-runtime.sh --network` | Passed: 22 tests (rerun with the monotonic launcher) |
+| `bash tests/run-runtime.sh --network-policy` | Passed: 15 tests |
+| `bash tests/run-runtime.sh --network-feasibility` | Passed: 1 test |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 80 tests (rerun with the monotonic launcher) |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 20 tests (rerun with the monotonic launcher) |
+| `git diff --check`, `bash -n antigravity-container.sh` | Passed |
+| Operator `--container-setup` on the three hosts | Pending (operator, after all four adoptions) |

@@ -520,9 +520,9 @@ A recipe is a JSON file that the operator keeps and reviews:
 
 The verified example recipes (Temurin 21, Maven 3.9, Go, Node.js 24,
 Python 3.13 and Rust) are kept in the reference repository, in
-[`claude-container/docs/toolchains/`](https://github.com/yarilc/claude-container/tree/main/docs/toolchains),
+[`sandbox-container/docs/toolchains/`](https://github.com/yarilc/sandbox-container/tree/main/docs/toolchains),
 with their versions, digests, checksums and usage notes in its
-[README "Toolchains" section](https://github.com/yarilc/claude-container#toolchains).
+[README "Toolchains" section](https://github.com/yarilc/sandbox-container#toolchains).
 They do not depend on the agent.
 
 ### Telling the agent
