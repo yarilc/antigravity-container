@@ -889,7 +889,7 @@ WSL2 6.6.87.2, Podman 4.9.3.
 | `bash tests/run-runtime.sh --wrapper` | Passed: 80 tests (rerun with the monotonic launcher) |
 | `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 20 tests (rerun with the monotonic launcher) |
 | `git diff --check`, `bash -n antigravity-container.sh` | Passed |
-| Operator `--container-setup` on the three hosts | Pending (operator, after all four adoptions) |
+| Operator `--container-setup` on the three hosts (`sandbox-ref-21`) | Passed (operator, 2026-11-16) |
 
 ## Adoption of `sandbox-ref-21`: 2026-11-16
 
@@ -906,6 +906,6 @@ Runtime image: `localhost/antigravity-cli:setup-9a4baafd86354976a2f08d429d70b0de
 | `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 411 tests, 75 skipped |
 | `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped |
 | `git diff --check` | Passed |
-| Operator `--container-setup` on the three hosts | Pending (operator, with the `sandbox-ref-20` adoption) |
+| Operator `--container-setup` on the three hosts (`sandbox-ref-21`) | Passed (operator, 2026-11-16) |
 
 Only shared test files changed: installations need no new setup for this tag.
