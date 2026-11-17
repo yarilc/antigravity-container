@@ -5,9 +5,9 @@ container. The wrapper follows the workflow of
 [claude-container](https://github.com/yarilc/claude-container) and
 [codex-container](https://github.com/yarilc/codex-container).
 
-The default session exposes the current project and a dedicated application
-home. Every launch selects a network mode: `offline`, `provider` (an
-exact-destination egress proxy) or `unrestricted`. YOLO and access to the host
+The default session exposes the current project and the host's `~/.gemini`
+below an ephemeral home. A launch runs in one network mode: `provider` (the
+default; an exact-destination egress proxy), `offline` or `unrestricted`. YOLO and access to the host
 Podman service are independent opt-ins.
 
 ## Requirements
@@ -164,22 +164,35 @@ Setup asks for the network mode, the authentication method (`account` or
 guard under maintenance consent, installs a protected release with a managed
 launcher, qualifies restricted modes and runs a credential-free smoke check. For
 `account` it offers to open `agy` for the Google sign-in; for `gemini` it names
-`GEMINI_API_KEY`. See [docs/setup.md](docs/setup.md). An ordinary launch with no
-`ANTIGRAVITY_CONTAINER_NETWORK` stops with `setup required:` guidance.
+`GEMINI_API_KEY`. See [docs/setup.md](docs/setup.md). A launch with no
+`ANTIGRAVITY_CONTAINER_NETWORK` selects `provider`; without the provider settings
+that setup saves, it stops with `setup required:` guidance.
 
 ### Direct operator launches
 
 ```bash
 chmod +x antigravity-container.sh
 export ANTIGRAVITY_CONTAINER_NETWORK=unrestricted
-ANTIGRAVITY_CONTAINER_MAINTENANCE=1 ./antigravity-container.sh --container-build --version
+ANTIGRAVITY_CONTAINER_MAINTENANCE=1 ./antigravity-container.sh --container-build
 cd /absolute/path/to/your-project
 /absolute/path/to/antigravity-container/antigravity-container.sh
 ```
 
-Every direct launch needs an explicit `ANTIGRAVITY_CONTAINER_NETWORK`; without
-one the wrapper stops with setup guidance before any engine call. Every image build, including the build of
-a missing image, needs the exact `ANTIGRAVITY_CONTAINER_MAINTENANCE=1`.
+An unset or empty `ANTIGRAVITY_CONTAINER_NETWORK` selects `provider`, the default
+for an agent wrapper; without a protected installation or the saved provider
+settings the wrapper stops with setup guidance before any engine call. Every
+image build, including the build of a missing image, needs the exact
+`ANTIGRAVITY_CONTAINER_MAINTENANCE=1`.
+
+A build pulls the exact `FROM` base first and then runs with `--pull=never`
+and the docker format, without a timeout. Every image carries a
+`build-inputs-hash` label over its build inputs (`Containerfile`,
+`.containerignore`, `network/relay.py`, `network/mux.py`,
+`container-entrypoint.sh`); a launch refuses an image built from other inputs and
+names the rebuild command. `--container-build` without `agy` arguments, also
+together with `--container-git-worktree` or `--container-shell`, validates every
+setting, builds the image and exits without a session; setup uses this
+operation. With `agy` arguments, it builds and then starts the session.
 
 You can replace the native command with an alias:
 
@@ -195,18 +208,30 @@ The wrapper handles only `--container-build`, `--container-shell`,
 `--container-toolchain` (first argument only, see [Toolchains](#toolchains))
 and `--container-help`. Other arguments retain their
 order, spaces, and empty values when forwarded to `agy`. Shell mode starts
-Bash instead of `agy` and ignores CLI arguments. Help for the wrapper requires
-no engine and creates no state. Non-interactive CLI invocation does not
-allocate a TTY; stdin is preserved.
+Bash instead of `agy`, passes it the remaining arguments (for example
+`--container-shell -c 'make test'`) and never adds the YOLO flag. Help for the
+wrapper requires no engine and creates no state. Non-interactive CLI invocation
+does not allocate a TTY; stdin is preserved.
+
+The session receives `USER`, `EDITOR=nano`, `VISUAL=nano`,
+`AGY_CLI_DISABLE_AUTO_UPDATE=true`, and by name `TERM`, `COLORTERM`, `LANG` and
+`LC_ALL` when set; `DBUS_SESSION_BUS_ADDRESS` is removed. Unrestricted sessions
+also receive `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` and their
+lowercase forms, run with `--init`, and see their container name as
+`CONTAINER_NAME`. `ANTIGRAVITY_CONTAINER_ENV_VARS` lists further host variable
+names (separated by whitespace) to forward by name, never by value; an invalid
+name stops the launch, an empty variable is not forwarded, and names the
+launcher sets itself (and, in restricted modes, proxy, CA and provider settings,
+or in provider mode another profile's credential) are skipped with a notice.
 
 ## Network modes
 
 | Mode | Agent access | Host Podman delegation |
 | --- | --- | --- |
-| unset or empty | Launch stops before engine calls and state creation | No session |
+| unset or empty | `provider`; without setup's saved provider settings the launch stops with setup guidance | Rejected |
 | `offline` | Own loopback, pipes and connected socket pairs only | Rejected |
 | `provider` | As offline, plus one channel to an exact-destination proxy | Rejected |
-| `unrestricted` (explicit only) | Ordinary networking, as before this mode switch | Exact opt-in allowed |
+| `unrestricted` (explicit only) | Ordinary networking | Exact opt-in allowed |
 
 Restricted modes run a native guard (Landlock plus seccomp) as the first
 process, deny new Unix sockets and every direct route, and never fall back to
@@ -233,8 +258,10 @@ a private native `ANTIGRAVITY_CONTAINER_NETWORK_RUNTIME_DIR` and the immutable
 | `google-account` | `oauth2.googleapis.com:443`, `cloudcode-pa.googleapis.com:443`, `daily-cloudcode-pa.googleapis.com:443`, `www.googleapis.com:443`, `aicode.googleapis.com:443`, `www.gstatic.com:443`, `play.googleapis.com:443` | account tokens in the state home |
 | `gemini-api` | `generativelanguage.googleapis.com:443` | `GEMINI_API_KEY` |
 
-Restricted sessions receive no host proxy or CA variable; only `gemini-api`
-forwards `GEMINI_API_KEY`. `AGY_CLI_DISABLE_AUTO_UPDATE=true` is protected, and
+Restricted sessions receive no host proxy or CA variable; provider mode forwards
+`GEMINI_API_KEY` by name only with `gemini-api`, never with `google-account` or an
+operator profile. Offline and unrestricted sessions get the key only when
+`ANTIGRAVITY_CONTAINER_ENV_VARS` lists it. `AGY_CLI_DISABLE_AUTO_UPDATE=true` is protected, and
 the proxy denies the update hosts. Telemetry (`play.googleapis.com`; the
 `telemetryEnabled` setting does not stop it on 1.5.3) is denied under
 `gemini-api` and allowed under `google-account`, which the operator sessions
@@ -256,11 +283,8 @@ inventory is empty, so installations report `locally-qualified`. The full
 contract is in [docs/network-contract.md](docs/network-contract.md), and the
 shared mechanism in [network/README.md](network/README.md).
 
-### Migration
+### Keyring and delegation notes
 
-- Set `ANTIGRAVITY_CONTAINER_NETWORK=unrestricted` to keep the previous
-  networking, and add `ANTIGRAVITY_CONTAINER_MAINTENANCE=1` to commands that
-  build the image.
 - The private D-Bus session and GNOME keyring were removed: `agy` now keeps
   account tokens in files. Accounts signed in through the keyring sign in again
   once. The old keyring files stay in the state home
@@ -270,17 +294,26 @@ shared mechanism in [network/README.md](network/README.md).
 
 ## Authentication
 
-Application state lives in a dedicated home, not the host's generic
-`~/.gemini`, unless you select shared state. Settings are at
-`~/.local/share/antigravity-container/home/.gemini/antigravity-cli/settings.json`
-on the host by default. The container sees them under
-`/antigravity-home/.gemini/antigravity-cli/settings.json`.
+By default the session shares the host's `~/.gemini` (or
+`ANTIGRAVITY_CONTAINER_CONFIG_DIR`, an absolute path without colon, CR or LF),
+mounted at `/antigravity-home/.gemini` below an ephemeral 512 MiB home. Settings
+are at `~/.gemini/antigravity-cli/settings.json` on the host and
+`/antigravity-home/.gemini/antigravity-cli/settings.json` in the container.
 
 | `ANTIGRAVITY_CONTAINER_STATE_DIR` | State |
 | --- | --- |
-| unset | Dedicated home `~/.local/share/antigravity-container/home` |
-| a path | That private isolated home |
-| empty | Shared host `~/.gemini` (or `ANTIGRAVITY_CONTAINER_CONFIG_DIR`) below an ephemeral home |
+| unset or empty | Shared host `~/.gemini` (or `ANTIGRAVITY_CONTAINER_CONFIG_DIR`) below an ephemeral home |
+| a path | That private isolated home, mounted at `/antigravity-home` |
+
+A nonempty `ANTIGRAVITY_CONTAINER_STATE_DIR` conflicts with
+`ANTIGRAVITY_CONTAINER_CONFIG_DIR`, must be absolute and must not overlap the
+workspace; `.gemini` and the CA parent inside it must stay inside the home and
+be private. Earlier versions defaulted to a separate home at
+`~/.local/share/antigravity-container/home`; to keep using it, set
+`ANTIGRAVITY_CONTAINER_STATE_DIR` to that path, or sign in again with the shared
+`~/.gemini`. `ANTIGRAVITY_CONTAINER_READONLY_STATE` (`1`, `true` or `yes`) mounts
+the existing configuration read-only instead; it must exist, nothing is created,
+and `agy` cannot save sign-ins or sessions in such a launch.
 
 With shared state only `.gemini` persists; `agy` files under `~/.config`
 (plugin secrets, user scope) last only for the session. Other tools that use
@@ -312,7 +345,7 @@ the CLI's native account logout behavior. Removing a container does not remove
 its persistent state.
 
 For automation without a terminal, select the native API key provider. Open
-the dedicated settings file and merge this setting into its JSON object:
+the settings file in the selected state and merge this setting into its JSON object:
 
 ```json
 {
@@ -355,8 +388,7 @@ or launch. `ANTIGRAVITY_CONTAINER_PODMAN` enables delegation only for the exact
 string `1`. Every other value (including `true`, `yes`, `01`, and `maybe`)
 disables delegation without error, in CLI and shell modes.
 
-**Migration:** replace previously enabling `ANTIGRAVITY_CONTAINER_PODMAN=true`
-or `yes` with `ANTIGRAVITY_CONTAINER_PODMAN=1` to retain host service access.
+Use exactly `ANTIGRAVITY_CONTAINER_PODMAN=1` for host service access.
 When disabled, delegation socket overrides are ignored and `CONTAINER_HOST` is
 explicitly removed from the container environment, including image or engine
 defaults. The wrapper retains its own launch-engine connection.
@@ -429,10 +461,9 @@ session.
   `ANTIGRAVITY_CONTAINER_TOOLCHAINS_DIR`. The launcher creates it private
   (`0700`) when it is missing. It must stay outside the workspace (or the
   worktree parent), the Antigravity state directory and the installation. The
-  state directory is the dedicated home, the isolated
-  `ANTIGRAVITY_CONTAINER_STATE_DIR`, or the shared `~/.gemini` (or
-  `ANTIGRAVITY_CONTAINER_CONFIG_DIR`). The default library is a sibling of the
-  dedicated home. A home directory exposed as the workspace with
+  state directory is the shared `~/.gemini` (or
+  `ANTIGRAVITY_CONTAINER_CONFIG_DIR`) or the isolated
+  `ANTIGRAVITY_CONTAINER_STATE_DIR`. A home directory exposed as the workspace with
   `ANTIGRAVITY_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1` contains the default
   library, so that launch stops. Move the library with
   `ANTIGRAVITY_CONTAINER_TOOLCHAINS_DIR`, or omit it.
@@ -507,13 +538,13 @@ A recipe is a JSON file that the operator keeps and reviews:
 - **Conflicts:** two default toolchains cannot share a command or a variable.
   Install a second version with `"default": false` and use it through its
   `env.sh`.
-- **Writable locations:** `/tmp` is writable and executable, `/var/tmp` and
-  `/run` are writable but `noexec`, and all three are discarded with the
-  container. The state home (`/antigravity-home`) persists, except in
-  shared-state mode, where it is a tmpfs and only `.gemini` persists. Point
-  caches to `/tmp` with literal values. Recipes shared with other wrappers
-  keep notes such as `GOTMPDIR` under the workspace, because `/tmp` is
-  `noexec` in some of them.
+- **Writable locations:** `/tmp` and the shared-state home are writable and
+  executable, `/var/tmp` is writable but `noexec`, and all are discarded with
+  the container; `/run` is not writable by the session user. An isolated home
+  (`/antigravity-home`) persists; in shared-state mode only `.gemini` persists.
+  Point caches to `/tmp` with literal values. Recipes shared with other
+  wrappers keep notes such as `GOTMPDIR` under the workspace, because `/tmp` is
+  `noexec` in the wrappers that do not declare executable temporary storage.
 - **Dependency downloads** (Maven, npm, pip, Cargo, Go modules) need network
   access that provider and offline modes do not grant. Provide dependencies in
   the workspace, or use an unrestricted session.
@@ -578,30 +609,34 @@ mount would get `ptmxmode=000` and no pseudo-terminal could be opened. `/dev/shm
 is masked with an empty read-only tmpfs, so tools that need POSIX shared memory
 there are not supported. An empty
 read-only tmpfs at `/run/secrets` masks engine default mounts there (for
-example RHEL subscription certificates from `mounts.conf`). `/tmp` allows execution for native runtime components and has a
-512 MiB limit; `/var/tmp` uses `noexec` with a separate 512 MiB limit; `/run`
-uses `noexec` with a 32 MiB limit. All three use `nosuid,nodev`, writable mode
-`1777`, and disappear with the container. Restricted sessions also mount the
+example RHEL subscription certificates from `mounts.conf`). `/tmp` and the
+shared-state home allow execution for native runtime components (the profile
+declares executable temporary storage) and have 512 MiB limits; `/var/tmp`
+uses `noexec` with a separate 512 MiB limit; `/run` uses `noexec` with a 32 MiB
+limit and is not writable by the session user. All use `nosuid,nodev`; `/tmp`,
+`/var/tmp` and the home have mode `1777`; all disappear with the container. In
+delegated sessions, nested Podman gets its own private tmpfs storage. Restricted sessions also mount the
 guard and its session inputs read-only. No full host home, host OpenSpec
 settings, host certificates, or SSH configuration is mounted automatically.
 
-Each session reserves a workspace-index name. Creation records the full owned
-container ID in a private CID file independently of client stdout. A signal
-during creation prevents attachment: the wrapper waits up to five seconds for
-creation, then bounds client cancellation and reads the CID again. It removes
-only a verified owned ID. An unresolved remote creation outcome is reported
-for manual inspection; a guessed name is never used for deletion. Existing
-sessions are not removed to resolve a name collision.
+Each session reserves a name from the physical current directory and the next
+numeric index among all existing instances. Concurrent name collisions are
+retried up to 20 times; existing sessions are never deleted to free a name.
+Private per-attempt CID files and a unique session label support recovery when
+creation is interrupted before its client returns an ID. A workspace name alone
+never authorizes removal, and interrupted creation never starts the application.
 
-TERM/INT/HUP are forwarded once to the attached owned session and produce
-exit status 143/130/129. The first handled signal determines the result;
-repeated signals do not restart shutdown. After successful forwarding, the
-application has up to five seconds to exit gracefully before forced removal.
-Engine forwarding and removal calls each use a five-second deadline with
-one-second KILL escalation. Local client termination allows five seconds
-before KILL and at most one second for final observation/reaping. These are
-separate phase budgets, not a five-second total shutdown promise. Ordinary
-builds and running sessions have no imposed runtime limit.
+A signal starts shutdown at once, also while the container is being created.
+INT, TERM and HUP are forwarded to the owned container. Shutdown has one
+20-second budget: after forwarding a signal, the wrapper allows at most 5
+seconds for graceful exit, then attempts forced removal with Podman's stop wait
+set to zero. Shutdown engine calls have a 2-second soft timeout and at most 1
+further second before forced client termination, capped by the remaining
+overall budget. Local create/attach clients are also terminated and reaped
+within that budget. Normal application and build durations are unrestricted.
+The first terminal signal selects status 143 (TERM), 130 (INT), or 129 (HUP);
+later signals do not restart shutdown. Otherwise the application's exit status
+is retained, including zero and 125.
 
 Cleanup reports failures without replacing the primary application or signal
 status, including application exit 125. If removal fails, inspect the reported
@@ -628,8 +663,7 @@ engines are rejected.
 
 Every agy and shell session, with or without Podman delegation and YOLO and in
 both account and Gemini API-key modes, runs with `--cap-drop=all` and
-`--security-opt=no-new-privileges`. The private D-Bus session, the dedicated
-GNOME keyring, Bubblewrap, Git, OpenSpec and the delegated Podman client work
+`--security-opt=no-new-privileges`. Bubblewrap, Git, OpenSpec and the delegated Podman client work
 under these settings. The wrapper never adds capabilities back to work around
 a tool; such a limitation is recorded in `docs/validation.md`. Delegation
 still grants host engine authority beyond these limits.
@@ -670,15 +704,17 @@ deliberately; the wrapper then prints a warning.
 
 | Variable | Default |
 | --- | --- |
-| `ANTIGRAVITY_CONTAINER_NETWORK` | required: `offline`, `provider` or `unrestricted` |
+| `ANTIGRAVITY_CONTAINER_NETWORK` | `provider` when unset or empty; `offline`, `provider` or `unrestricted` |
 | `ANTIGRAVITY_CONTAINER_NETWORK_PROFILE` | provider only: `google-account` or `gemini-api` |
 | `ANTIGRAVITY_CONTAINER_NETWORK_POLICY` | provider only: absolute policy path |
 | `ANTIGRAVITY_CONTAINER_NETWORK_RUNTIME_DIR` | provider only: private native directory |
 | `ANTIGRAVITY_CONTAINER_EGRESS_IMAGE` | provider only: immutable proxy image ID or digest |
 | `ANTIGRAVITY_CONTAINER_MAINTENANCE` | disabled; exact `1` authorizes builds and proxy pulls |
 | `ANTIGRAVITY_CONTAINER_IMAGE` | `localhost/antigravity-cli:latest` |
-| `ANTIGRAVITY_CONTAINER_STATE_DIR` | unset: `${HOME}/.local/share/antigravity-container/home`; empty: shared `~/.gemini` |
+| `ANTIGRAVITY_CONTAINER_STATE_DIR` | unset or empty: shared `~/.gemini`; a path: isolated home |
 | `ANTIGRAVITY_CONTAINER_CONFIG_DIR` | `~/.gemini` with shared state; the session always sees `/antigravity-home/.gemini` |
+| `ANTIGRAVITY_CONTAINER_READONLY_STATE` | disabled; `1`, `true` or `yes` mounts the existing configuration read-only |
+| `ANTIGRAVITY_CONTAINER_ENV_VARS` | empty; host variable names forwarded by name |
 | `ANTIGRAVITY_CONTAINER_TRUST_HOST_CA` | disabled; `1`, `true` or `yes` mounts one host CA bundle read-only |
 | `ANTIGRAVITY_CONTAINER_CA_BUNDLE` | first of `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt` |
 | `ANTIGRAVITY_YOLO` | disabled |
@@ -689,16 +725,15 @@ deliberately; the wrapper then prints a warning.
 | `ANTIGRAVITY_CONTAINER_PIDS_LIMIT` | `512` (integer from 1 to 4194304) |
 | `ANTIGRAVITY_CONTAINER_RUN_TIMEOUT` | `0`, disabled (whole seconds) |
 | `ANTIGRAVITY_CONTAINER_ALLOW_UNSAFE_WORKSPACE` | disabled; only exact `1` enables it |
-| `ANTIGRAVITY_CONTAINER_TOOLCHAINS` | enabled; `0`, `false` or `no` omits the read-only `/toolchains` mount |
+| `ANTIGRAVITY_CONTAINER_TOOLCHAINS` | enabled (also when empty); `0`, `false` or `no` omits the read-only `/toolchains` mount |
 | `ANTIGRAVITY_CONTAINER_TOOLCHAINS_DIR` | `${XDG_DATA_HOME:-~/.local/share}/sandbox-toolchains`, shared by the wrappers |
 
 When the wrapper already uses a local Unix `CONTAINER_HOST`, that accessible
 socket is the default service endpoint instead. An explicit
-`ANTIGRAVITY_CONTAINER_PODMAN_SOCKET` takes precedence. `GEMINI_API_KEY` (by
-mode, see [Network modes](#network-modes)) and terminal `TERM` are the only
-caller variables explicitly forwarded by name;
-the entire environment and `.env` files are not imported by the wrapper.
-`EDITOR` and `VISUAL` use the included nano editor.
+`ANTIGRAVITY_CONTAINER_PODMAN_SOCKET` takes precedence. Caller variables are
+forwarded only by name, as described in [First run](#direct-operator-launches)
+and [Network modes](#network-modes); the entire environment and `.env` files are
+not imported by the wrapper. `EDITOR` and `VISUAL` use the included nano editor.
 
 ## Image and dependencies
 
@@ -763,15 +798,15 @@ image and explicitly rebuild:
 
 ```bash
 podman tag localhost/antigravity-cli:latest localhost/antigravity-cli:previous
-ANTIGRAVITY_CONTAINER_MAINTENANCE=1 agy --container-build --version
+ANTIGRAVITY_CONTAINER_MAINTENANCE=1 agy --container-build
 # Roll back the executable and toolchain:
 ANTIGRAVITY_CONTAINER_IMAGE=localhost/antigravity-cli:previous agy --version
 ```
 
 An absent image is built only with `ANTIGRAVITY_CONTAINER_MAINTENANCE=1`.
-Explicit builds use `--no-cache`, so
-they download the recorded artifacts again and verify their checksums. The
-build prints CLI and OpenSpec versions and binary architecture. It installs the
+Explicit builds keep the layer cache; a changed recorded version or checksum in
+`Containerfile` invalidates the download layers, so the build downloads the
+recorded artifacts again and verifies their checksums. The build prints CLI and OpenSpec versions and binary architecture. It installs the
 recorded `agy` release, not the latest published one; Debian packages are not
 pinned, so builds are not bit-for-bit reproducible.
 
@@ -793,13 +828,30 @@ pinned, so builds are not bit-for-bit reproducible.
 State persists across image updates; back it up separately if you need to
 restore application data as well as the executable.
 
+## Shared sandbox components and the agent profile
+
+`network/`, `setup/`, `launcher/` and the shared tests come unchanged from the
+reference repository `sandbox-container` and are shared with the Claude, Codex,
+OpenCode and Pi wrappers. They contain no Antigravity-specific names.
+`launcher/core.sh` is the whole launcher: `antigravity-container.sh` is the thin
+entry script every wrapper shares, and `agent/launcher.sh` holds the profile
+values the core needs plus Antigravity's two hooks, which document
+`ANTIGRAVITY_YOLO` and `GEMINI_API_KEY` and turn `ANTIGRAVITY_YOLO` into
+`--dangerously-skip-permissions` (`docs/launcher-contract.md` in
+`sandbox-container`). Restricted sessions run the image's entrypoint script
+`/usr/local/bin/antigravity-entrypoint` through the guard. The shared launcher
+tests (`tests/test_launcher.py`, with the fake engine `tests/fake_podman.py`)
+run the core against fixture agent parts; `tests/test_wrapper.py` covers only
+Antigravity's part. Every other agent-specific value is declared in
+`agent/profile.json`.
+
 ## Verification
 
 Run the checks in the runner, which uses the `agy` image and native volume
 storage (a noexec `/tmp` or a Windows drive cannot hold the test fixtures):
 
 ```bash
-bash tests/run-runtime.sh --wrapper        # wrapper behavior with a fake engine
+bash tests/run-runtime.sh --wrapper        # shared launcher and wrapper tests with a fake engine
 bash tests/run-runtime.sh --shared         # shared suites and per-agent unit tests
 bash tests/run-runtime.sh --guard          # guard runtime (also --guard-idle)
 bash tests/run-runtime.sh --qualification  # local qualification

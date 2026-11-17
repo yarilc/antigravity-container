@@ -22,6 +22,7 @@ The shared components are copied unchanged from `sandbox-container` at tag
 
 - `network/` (except the build output `network/bin/`);
 - `setup/`;
+- `launcher/` (the launcher core `launcher/core.sh`);
 - the shared tests listed in that tag's `tests/test_alignment.py`.
 
 `tests/test_reference_copy.py` holds the SHA-256 of every copied file and fails
@@ -38,20 +39,19 @@ Intentional differences are limited to per-agent files:
 | --- | --- |
 | `agent/profile.json` | Identity: `antigravity-container`, prefix `ANTIGRAVITY_CONTAINER`, labels `io.antigravity-container.*`. Images: `localhost/antigravity-cli`, `localhost/antigravity-egress`, `localhost/antigravity-guard-toolchain`. Runtime: home `/antigravity-home`, command `agy`. State: configuration `.gemini` with override `ANTIGRAVITY_CONTAINER_CONFIG_DIR`, no shared directories. Approval variable `ANTIGRAVITY_YOLO`. Methods `account` (`google-account`) and `gemini` (`gemini-api`). Installation file `container-entrypoint.sh` (`install.files`). The `account` method declares empty `login_args`: setup offers sign-in inside the interactive `agy` |
 | `agent/policies/default.json` | `google-account` and `gemini-api`, revision `antigravity-2026-11-11-v2` |
-| `antigravity-container.sh` | `agy` arguments and YOLO; three state choices (unset: dedicated home; path: isolated home; empty: shared `~/.gemini` below an ephemeral home); no D-Bus session; protected `AGY_CLI_DISABLE_AUTO_UPDATE=true`; `GEMINI_API_KEY` only with `gemini-api`; no host proxy or CA variables in restricted modes; `--container-setup`, the `setup required:` message and the stderr diagnostics filter |
+| `antigravity-container.sh` | The shared thin entry script; only the wrapper name in its comment differs |
+| `agent/launcher.sh` | Antigravity profile values for the core; `ANTIGRAVITY_YOLO` → `--dangerously-skip-permissions`; restricted application `/usr/local/bin/antigravity-entrypoint` (`native.exec`); executable `/tmp` and home (`native.exec_tmp`); fixed `AGY_CLI_DISABLE_AUTO_UPDATE=true`, reserved for the forwarding list; no D-Bus session; `GEMINI_API_KEY` only with `gemini-api`; `container-entrypoint.sh` as installed file and build input |
 | `container-entrypoint.sh` | Help and version shortcut, scoped `SSH_CONNECTION` marker for the remote URL/code sign-in, `exec agy`; no keyring |
 | `Containerfile`, `.containerignore` | `agy` 1.5.3 from the pinned release artifact, no keyring packages; copies `network/relay.py` and `network/mux.py` |
-| `tests/test_wrapper.py`, `fake_podman.py`, `test_runtime.py`, `test_network_runtime.py`, `network_tls_fixture.py`, `test_setup_runtime.py`, `run-runtime.sh`, `test_image_pins.py`, `image-smoke.sh`, `test_reference_copy.py` | Antigravity names, synthetic Gemini `streamGenerateContent` fixture, Google host inventories |
+| `tests/test_wrapper.py` (Antigravity's agent part), `test_setup_wrapper.py`, `test_runtime.py`, `test_network_runtime.py`, `network_tls_fixture.py`, `test_setup_runtime.py`, `run-runtime.sh`, `test_image_pins.py`, `image-smoke.sh`, `test_reference_copy.py` | Antigravity names, synthetic Gemini `streamGenerateContent` fixture, Google host inventories |
 
-Where the reference treats an unset state variable as shared state, this
-wrapper keeps its dedicated home. It passes that home to `network/qualify.py`
-explicitly, so qualification and launch bind the same writable paths.
+As in the reference, an unset or empty state variable selects shared state.
 
 ## Modes
 
 | Mode | Agent access | Socket delegation |
 | --- | --- | --- |
-| unset or empty | Launch stops with `setup required:` guidance before engine calls and state creation | No session |
+| unset or empty | `provider` (Antigravity's default); `setup required:` guidance without a protected installation or the saved provider settings | Rejected |
 | `offline` | Own loopback, pipes and connected socket pairs only | Rejected |
 | `provider` | As offline, plus one preconnected channel to an exact-destination proxy | Rejected |
 | `unrestricted` (explicit only) | Ordinary runtime networking | Exact opt-in allowed |
