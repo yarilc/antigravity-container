@@ -456,10 +456,9 @@ def build_image(release, recipe, tag, env, ca_bundle=''):
 
 
 def build_runtime(release, tag, env, ca_bundle=''):
-    # A wrapper-built runtime keeps the agent's own build arguments and labels.
-    if PROFILE.runtime_build == 'recipe':
-        return build_image(release, 'Containerfile', tag, env, ca_bundle)
-    # The build-only operation starts no session; the mode only admits it. The
+    # Every runtime is built by the wrapper's build-only operation, which keeps
+    # the agent's build arguments and the build-inputs-hash label. It starts no
+    # session; the mode only admits it. The
     # wrapper receives the trust selection and bundle explicitly and passes the
     # bundle to its own build as a build secret; without trust it gets none.
     run(['bash', release / PROFILE.wrapper, '--container-build'],

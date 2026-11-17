@@ -2,10 +2,10 @@
 
 ## 1. Adopt `sandbox-ref-24`
 
-- [ ] 1.1 Commit this change directory on `main`. Save the current `antigravity-container.sh`, `tests/test_wrapper.py` and `tests/fake_podman.py` outside the repository as the old-test baseline. From `sandbox-container`, run `python3 -I tools/propagate.py ../antigravity-container sandbox-ref-21 sandbox-ref-24` (dry run), then `--apply`. Add `launcher` to `CLOSED_DIRECTORIES` in `tests/test_reference_copy.py`. Verify that:
+- [x] 1.1 Commit this change directory on `main`. Save the current `antigravity-container.sh`, `tests/test_wrapper.py` and `tests/fake_podman.py` outside the repository as the old-test baseline. From `sandbox-container`, run `python3 -I tools/propagate.py ../antigravity-container sandbox-ref-21 sandbox-ref-24` (dry run), then `--apply`. Add `launcher` to `CLOSED_DIRECTORIES` in `tests/test_reference_copy.py`. Verify that:
   - the plan lists exactly the files in design "Context";
   - the tool switched to `adopt-sandbox-ref-24`.
-- [ ] 1.2 Fix the parity table in `docs/network-contract.md` by hand (design decision 7). Verify that the reference, Claude and Codex rows equal those in their repositories, and the OpenCode and Pi rows equal theirs.
+- [x] 1.2 Fix the parity table in `docs/network-contract.md` by hand (design decision 7). Verify that the reference, Claude and Codex rows equal those in their repositories, and the OpenCode and Pi rows equal theirs.
 
 ## 2. Launcher on the shared core
 
