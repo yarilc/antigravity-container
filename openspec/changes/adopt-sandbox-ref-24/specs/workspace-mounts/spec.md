@@ -30,8 +30,9 @@ With `ANTIGRAVITY_CONTAINER_STATE_DIR` unset or empty, the wrapper SHALL mount t
 - **THEN** startup fails before image operations naming the path
 
 #### Scenario: Isolated state overlaps the workspace
-- **WHEN** the selected state directory or configuration directory overlaps the workspace or worktree parent
+- **WHEN** a nonempty `ANTIGRAVITY_CONTAINER_STATE_DIR` overlaps the workspace or worktree parent
 - **THEN** the wrapper exits with status 1 naming the variable before any engine query
+- **AND** the shared configuration directory is not checked for overlap
 
 ### Requirement: Read-only state
 `ANTIGRAVITY_CONTAINER_READONLY_STATE`, a boolean (`1`, `true`, `yes`; empty, `0`, `false`, `no`), SHALL mount the configuration directory read-only below the ephemeral home, taken from shared state or from the isolated home. That directory SHALL already exist and be accessible to the caller; the launcher SHALL NOT create it, check its owner or privacy, or pass it to restricted preparation as writable. The isolated home itself SHALL NOT be mounted.

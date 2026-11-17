@@ -1,7 +1,7 @@
 # Interactive sandbox setup
 
 The durable contract is [container-setup](../openspec/specs/container-setup/spec.md).
-It is copied unchanged from `sandbox-container` at tag `sandbox-ref-21`
+It is copied unchanged from `sandbox-container` at tag `sandbox-ref-24`
 (`setup/`); Antigravity values come from `agent/profile.json`. The archived change
 `openspec/changes/archive/<date>-add-container-setup/` retains the design, tasks
 and delta specifications.
@@ -36,20 +36,21 @@ mounts the host `~/.gemini` (or the directory you select) below an ephemeral
 home: only `.gemini` persists, and `agy` files under `~/.config/antigravity`
 (plugin secrets, user scope) last only for the session. Other tools that use
 `~/.gemini`, such as Gemini CLI, share their files with the sandbox. **If you
-also use Gemini CLI, choose `isolated`**; its default directory,
-`~/.local/share/antigravity-container/home`, is the dedicated home that direct
-launches use when `ANTIGRAVITY_CONTAINER_STATE_DIR` is unset.
+also use Gemini CLI, choose `isolated`**; its default directory is
+`~/.local/share/antigravity-container/home`. Direct launches with
+`ANTIGRAVITY_CONTAINER_STATE_DIR` unset or empty use the shared `~/.gemini`.
 
 The permission-bypass question saves `ANTIGRAVITY_YOLO=0` or `1`; `1` adds
 `agy --dangerously-skip-permissions` to every managed `agy` launch.
 Accept defaults with Enter; invalid choices are requested again. Existing saved
 choices are offered for review on rerun, including a previously selected offline
-mode. The managed launcher applies the saved network choice. Ordinary direct
-invocation with `ANTIGRAVITY_CONTAINER_NETWORK` unset or empty stops with setup
-guidance before runtime prerequisite checks, engine queries or state creation.
-Setup is never started automatically. An explicit empty network override on a
-managed invocation also receives this refusal; remove the override to use the
-saved choice. Offline mode cannot reach any model provider.
+mode. The managed launcher applies the saved network choice. A direct
+invocation with `ANTIGRAVITY_CONTAINER_NETWORK` unset or empty selects `provider`;
+without a protected installation or the saved provider settings it stops with
+setup guidance before engine queries or state creation. Setup is never started
+automatically. An explicit empty network override on a managed invocation also
+selects `provider`, never the saved mode; remove the override to use the saved
+choice. Offline mode cannot reach any model provider.
 
 After the worktree question, setup asks for the agent budgets and lifetime:
 `Agent memory limit` (default `4g`), `Agent CPU limit` (default `2`),
@@ -76,17 +77,19 @@ Operators can still invoke a manually prepared wrapper with explicit `offline`,
 qualification and authority checks apply. Image maintenance additionally
 requires exact `ANTIGRAVITY_CONTAINER_MAINTENANCE=1`; that consent alone does not select
 a mode. Help and standalone setup/qualification retain their own dispatch checks.
-Standalone `--container-qualify` keeps its offline default when no mode is set
-and can run only fixed controls, never a supplied application command.
+Standalone `--container-qualify` qualifies the same default mode when no mode
+is set and can run only fixed controls, never a supplied application command.
 
-Earlier versions of this wrapper needed no runtime-mode selection; since
-`add-network-egress` a direct launch needs an explicit `ANTIGRAVITY_CONTAINER_NETWORK`
-(`unrestricted` keeps the previous networking), and an ordinary missing-mode
-launch now stops with setup guidance. Managed launchers supply the saved mode.
-Install an updated protected wrapper through setup, or update and requalify a
-manual restricted installation: changing the wrapper invalidates its old
-qualification identity. Activation and last-working-release rollback are
-unchanged.
+An unset or empty `ANTIGRAVITY_CONTAINER_NETWORK` selects `provider`,
+Antigravity's default. Without a protected installation or the saved provider
+settings, the launch stops with setup guidance; managed launchers supply the
+saved mode and settings. Install the updated protected wrapper through setup,
+or update and requalify a manual restricted installation: changing the entry
+script, the shared launcher core `launcher/core.sh` or the agent part
+`agent/launcher.sh` invalidates the old qualification identity. Setup prepares
+runtime images through the wrapper's build-only `--container-build`, so every
+image carries the `build-inputs-hash` label that launches check. Activation and
+last-working-release rollback are unchanged.
 
 Provider mode authorizes CONNECT hostname/address and requires matching SNI in
 the initial TLS ClientHello, and in the retried ClientHello after a TLS 1.3
@@ -342,7 +345,8 @@ For the `gemini` method setup finishes with `Authentication pending. Supply
 GEMINI_API_KEY`. It does not collect or save the key and makes no model request.
 Provider launches forward the key only with the `gemini-api` profile, by name;
 select `modelProvider: gemini` in the Antigravity settings (see the README).
-In unrestricted mode the wrapper forwards `GEMINI_API_KEY` by name as well.
+Offline and unrestricted sessions forward no key unless
+`ANTIGRAVITY_CONTAINER_ENV_VARS=GEMINI_API_KEY` lists it.
 
 The wrapper reclassifies Podman 4.3's successful `Should restart: false` message
 as informational (`INFO[...]` or `level=info`), preserving its timestamp and

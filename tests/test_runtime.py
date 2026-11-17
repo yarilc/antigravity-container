@@ -252,17 +252,24 @@ for line in pathlib.Path('/proc/self/mountinfo').read_text().splitlines():
     fields = line.split()
     sep = fields.index('-')
     mounts[fields[4]] = (fields[5].split(','), fields[sep+1], fields[sep+3].split(','))
-for path, limit, executable in (('/tmp', 512*1024*1024, True),
-                                 ('/var/tmp', 512*1024*1024, False),
-                                 ('/run', 32*1024*1024, False)):
+import sys
+checks = [('/tmp', 512*1024*1024, True), ('/var/tmp', 512*1024*1024, False), ('/run', 32*1024*1024, False)]
+if sys.argv[1:] == ['shared']:
+    # The shared-state home is an ephemeral tmpfs; the profile makes it executable.
+    checks.append(('/antigravity-home', 512*1024*1024, True))
+for path, limit, executable in checks:
     options, fs, super_options = mounts[path]
     assert fs == 'tmpfs', (path, fs)
     assert {'rw', 'nosuid', 'nodev'} <= set(options), (path, options)
     assert ('noexec' not in options) == executable, (path, options)
     stats = os.statvfs(path)
     assert stats.f_blocks * stats.f_frsize == limit, (path, stats)
-    if path != '/run':
-        assert pathlib.Path(path).stat().st_mode & 0o7777 == 0o1777
+    if path == '/run':
+        # Only /tmp, /var/tmp and the home are mode 1777 (contract L7).
+        assert not os.access(path, os.W_OK), path
+        print(path, 'limit', limit, 'read-only for the session user')
+        continue
+    assert pathlib.Path(path).stat().st_mode & 0o7777 == 0o1777
     target = pathlib.Path(path) / 'antigravity-execution-probe'
     target.write_bytes(pathlib.Path('/bin/true').read_bytes())
     target.chmod(0o755)
@@ -278,7 +285,21 @@ for path, limit, executable in (('/tmp', 512*1024*1024, True),
         result = self.shell('python3 -c ' + shlex.quote(probe) + '\n')
         self.assert_success(result)
         self.assert_success(self.shell(
-            'for path in /tmp /var/tmp /run; do test ! -e "$path/antigravity-ephemeral"; done\n'))
+            'for path in /tmp /var/tmp; do test ! -e "$path/antigravity-ephemeral"; done\n'))
+        # Shared state (the default): the home is an executable 512 MiB tmpfs.
+        result = self.shell('python3 -c ' + shlex.quote(probe) + ' shared\n', ANTIGRAVITY_CONTAINER_STATE_DIR='')
+        self.assert_success(result)
+        self.assert_success(self.shell('test ! -e /antigravity-home/antigravity-ephemeral\n',
+                                       ANTIGRAVITY_CONTAINER_STATE_DIR=''))
+
+    def test_shared_gemini_state_is_the_default(self):
+        env = {k: v for k, v in self.env.items() if k != 'ANTIGRAVITY_CONTAINER_STATE_DIR'}
+        result = subprocess.run([str(WRAPPER), '--container-shell'], cwd=self.project, env=env,
+                                input='printf shared > /antigravity-home/.gemini/default-sentinel\n',
+                                text=True, capture_output=True, timeout=90)
+        self.assert_success(result)
+        self.assertEqual((self.home / '.gemini/default-sentinel').read_text(), 'shared')
+        self.assertFalse((self.home / '.local/share/antigravity-container').exists())
 
     def test_pseudo_terminals_and_device_masks(self):
         # agy runs tool commands in a PTY: the session must allocate one, while

@@ -98,7 +98,7 @@ class SetupRuntime(unittest.TestCase):
             + 'args=sys.argv[1:]\n'
             + "if args[:2] == ['image','exists'] and args[-1] in " + repr(('localhost/antigravity-cli:latest', prepared_runtime)) + ":\n"
             + ' sys.exit(1 if Path(' + repr(str(self.base / 'withhold-runtime')) + ').exists() else 0)\n'
-            + "if args[:2] == ['image','inspect'] and args[-1] in " + repr(('localhost/antigravity-cli:latest', prepared_runtime)) + ":\n"
+            + "if args[:2] == ['image','inspect'] and '{{.Id}}' in args and args[-1] in " + repr(('localhost/antigravity-cli:latest', prepared_runtime)) + ":\n"
             + ' print(' + repr(prepared_runtime) + '); sys.exit(0)\n'
             + "if args[:2] == ['image','exists'] and args[-1] in " + repr(('localhost/antigravity-egress:local', prepared_proxy)) + ": sys.exit(0)\n"
             + "if args[:2] == ['image','inspect'] and args[-1] in " + repr(('localhost/antigravity-egress:local', prepared_proxy)) + ":\n"

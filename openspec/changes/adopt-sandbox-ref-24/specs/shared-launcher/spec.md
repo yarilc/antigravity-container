@@ -42,6 +42,7 @@ The agent part SHALL make the core run `/usr/local/bin/antigravity-entrypoint` a
 #### Scenario: Fixed settings win
 - **WHEN** a toolchain or `ANTIGRAVITY_CONTAINER_ENV_VARS` supplies `AGY_CLI_DISABLE_AUTO_UPDATE=false` or `DBUS_SESSION_BUS_ADDRESS`
 - **THEN** the session has `AGY_CLI_DISABLE_AUTO_UPDATE=true` and no `DBUS_SESSION_BUS_ADDRESS`
+- **AND** the forwarding list skips both names with a notice
 
 ### Requirement: Antigravity launcher tests cover only Antigravity's part
 Antigravity's launcher behavior SHALL be tested by the shared `tests/test_launcher.py` and `tests/fake_podman.py`, copied unchanged from the reference tag. `tests/test_wrapper.py` SHALL test only Antigravity's hooks, agent data, credential rules per policy profile and shipped policy inventories. An Antigravity launcher case that the shared tests do not cover SHALL be added to the reference first, not kept as a wrapper copy.

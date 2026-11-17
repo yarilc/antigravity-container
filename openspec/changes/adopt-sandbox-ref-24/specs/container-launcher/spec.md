@@ -98,11 +98,11 @@ The wrapper SHALL retain verifiable ownership evidence independently of create-c
 - **THEN** the wrapper does not remove that container during retries, interruption, or cleanup
 
 ### Requirement: Restricted forwarding and secret controls
-Secret values SHALL NOT appear in wrapper-generated argv or diagnostics. Offline and provider modes SHALL forward no host proxy or CA variable and only the selected policy profile's credential. Unrestricted mode SHALL forward the host proxy variables but no credential unless `ANTIGRAVITY_CONTAINER_ENV_VARS` lists it.
+Secret values SHALL NOT appear in wrapper-generated argv or diagnostics. Offline and provider modes SHALL forward no host proxy or CA variable. Provider mode SHALL forward only the selected policy profile's credential; offline mode SHALL forward none unless `ANTIGRAVITY_CONTAINER_ENV_VARS` lists it. Unrestricted mode SHALL forward the host proxy variables but no credential unless `ANTIGRAVITY_CONTAINER_ENV_VARS` lists it.
 
 #### Scenario: Restricted forwarding
 - **WHEN** offline or provider mode runs with `HTTPS_PROXY`, `no_proxy`, `SSL_CERT_FILE` and `GEMINI_API_KEY` set on the host
-- **THEN** none of the host proxy or CA values reaches the session, offline forwards no key, and provider forwards `GEMINI_API_KEY` only with `gemini-api`
+- **THEN** none of the host proxy or CA values reaches the session, offline forwards no key unless `ANTIGRAVITY_CONTAINER_ENV_VARS` lists it, and provider forwards `GEMINI_API_KEY` only with `gemini-api`
 
 #### Scenario: Unrestricted forwarding
 - **WHEN** unrestricted mode runs with `HTTPS_PROXY` and `GEMINI_API_KEY` set on the host

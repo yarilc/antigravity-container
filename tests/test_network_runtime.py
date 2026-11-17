@@ -53,7 +53,8 @@ class NetworkRuntime(unittest.TestCase):
         for source in list((ROOT / 'network').glob('*.py')) + [ROOT / 'network/resolv.conf']:
             shutil.copyfile(source, self.install / 'network' / source.name)
         (self.install / 'agent/policies').mkdir(mode=0o700, parents=True, exist_ok=True)
-        for name in ('agent/profile.json', 'agent/policies/default.json'):
+        (self.install / 'launcher').mkdir(mode=0o700, exist_ok=True)
+        for name in ('agent/profile.json', 'agent/policies/default.json', 'agent/launcher.sh', 'launcher/core.sh'):
             shutil.copyfile(ROOT / name, self.install / name)
         # Installed agent files bound by qualification (agent/profile.json install.files).
         for name in ('container-entrypoint.sh', 'Containerfile', '.containerignore'):
@@ -174,17 +175,19 @@ exit 0
         return owned
 
     def test_restricted_delegation_grid_and_disabled_override(self):
+        _, provider = self.provider_fixture()
         for mode in ('offline', 'provider'):
+            # Provider mode checks its own settings first, so the grid supplies them.
+            settings = provider if mode == 'provider' else {}
             for state in ('', self.env['ANTIGRAVITY_CONTAINER_STATE_DIR']):
                 for shell in (False, True):
                     for yolo in ('0', '1'):
                         result = subprocess.run([str(self.wrapper), *(['--container-shell'] if shell else ['--version'])],
-                            cwd=self.project, env=self.env | {'ANTIGRAVITY_CONTAINER_NETWORK':mode,
+                            cwd=self.project, env=self.env | settings | {'ANTIGRAVITY_CONTAINER_NETWORK':mode,
                                 'ANTIGRAVITY_CONTAINER_STATE_DIR':state, 'ANTIGRAVITY_YOLO':yolo,
                                 'ANTIGRAVITY_CONTAINER_PODMAN':'1'}, input='', capture_output=True, text=True, timeout=10)
                         self.assertNotEqual(result.returncode, 0)
                         self.assertIn('rejects ANTIGRAVITY_CONTAINER_PODMAN=1', result.stderr)
-        _, provider = self.provider_fixture()
         for mode in ('offline', 'provider'):
             for state in ('', self.env['ANTIGRAVITY_CONTAINER_STATE_DIR']):
                 environment = provider | {'ANTIGRAVITY_CONTAINER_NETWORK':mode}
