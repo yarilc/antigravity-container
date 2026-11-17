@@ -909,3 +909,106 @@ Runtime image: `localhost/antigravity-cli:setup-9a4baafd86354976a2f08d429d70b0de
 | Operator `--container-setup` on the three hosts (`sandbox-ref-21`) | Passed (operator, 2026-11-16) |
 
 Only shared test files changed: installations need no new setup for this tag.
+
+## Adoption of `sandbox-ref-24`: 2026-11-17
+
+Change `adopt-sandbox-ref-24`. Copied with `tools/propagate.py` from
+`sandbox-container` tag `sandbox-ref-24` (commit `dd5d82e`), straight from
+`sandbox-ref-21`: `launcher/core.sh`, `tests/fake_podman.py` (replacing
+Antigravity's own fake engine), `tests/fixtures/agent/launcher.sh`,
+`tests/fixtures/shell-agent/launcher.sh`, `tests/test_launcher.py`,
+`network/README.md`, `network/agent_profile.py`, `network/control.py`,
+`network/qualification_records.py`, `network/qualify.py`, `setup/common.py`,
+`setup/launch.py`, `setup/setup.py`, `tests/fixtures/agent/profile.json`,
+`tests/sandbox_profile.py`, `tests/test_agent_profile.py`,
+`tests/test_alignment.py`, `tests/test_network_policy.py`,
+`tests/test_qualification.py`, `tests/test_setup.py`. The
+`tests/test_reference_copy.py` manifest moved to the tag, with `launcher/` as a
+closed shared directory; the parity table was fixed by hand.
+
+- **Launcher:** `antigravity-container.sh` is the reference's thin entry script;
+  `agent/launcher.sh` holds Antigravity's profile values,
+  `AGENT_EXEC=/usr/local/bin/antigravity-entrypoint`, `AGENT_EXEC_TMP=1`,
+  `AGENT_INSTALL_FILES=(container-entrypoint.sh)`, `AGENT_CREDENTIALS`
+  (`gemini-api` with `GEMINI_API_KEY`, `google-account` without),
+  `AGY_CLI_DISABLE_AUTO_UPDATE=true` as a fixed and reserved setting, the removal
+  of `DBUS_SESSION_BUS_ADDRESS`, and two hooks: `agent_approval_bypass`
+  (`--dangerously-skip-permissions`) and `agent_help`. `agent/profile.json`
+  declares `native.exec` and `native.exec_tmp: true`.
+- **State (U4):** shared `~/.gemini` is the default; the former default home
+  `~/.local/share/antigravity-container/home` is used only when named in
+  `ANTIGRAVITY_CONTAINER_STATE_DIR`.
+- **Credentials:** offline sessions forward `GEMINI_API_KEY` only when
+  `ANTIGRAVITY_CONTAINER_ENV_VARS` lists it, as the contract's reserved-name rule
+  (M5, U13) allows; the change's deltas say so.
+- **Temporary storage:** `/tmp` and the shared-state home are executable 512 MiB
+  tmpfs mounts, `/var/tmp` and `/run` are `noexec`, and `/run` is not writable by
+  the session user (L7, as for Codex).
+
+Old tests gate (design decision 4): the `sandbox-ref-21` `tests/test_wrapper.py`
+(80 cases) ran with its saved fake engine against the new entry script and core,
+with only its harness adapted (the fake answers the `build-inputs-hash` label;
+synthetic installations copy the core, the agent part, the relay inputs and the
+policy; tmpfs options and removal arguments compare as sets; the old internal
+`error` file is optional; the mount helper expects the classified `/run`
+change). First run: 29 failing cases; after the harness adaptations: 23 failing
+cases, each classified below. No lost behavior: three candidates were classified
+as visible changes by the user (2026-11-17).
+
+| Old case | Outcome | Maps to |
+| --- | --- | --- |
+| `test_application_status_survives_cleanup_failure` (removal failed or stalled) | visible change | wording: "cleanup rm failed or timed out" (U9 cleanup report); status preserved |
+| `test_build_location_refresh_and_missing_image` | visible change | U8: an explicit build keeps the layer cache |
+| `test_complete_socket_response_required` (`true /`, `true unix:///`) | visible change (user, 2026-11-17) | the core accepts a reported host socket path `/` and mounts the host root read/write at `/run/podman/podman.sock` |
+| `test_creation_signal_ownership_races` (intermittent, mode=after) | visible change | U9: immediate shutdown terminates the create client; the CID may not be published |
+| `test_explicit_temporary_mount_arguments` | visible change | L7: `/run` without mode 1777 (user, 2026-11-17, Codex) |
+| `test_help_documents_hardening` | visible change | help text from the core |
+| `test_help_documents_modes_migration_and_provider_limits` | visible change | U1: no migration text; hosts printed from the policy |
+| `test_interrupted_creation_is_recovered_by_label` | visible change | wording of the core's cleanup reports |
+| `test_key_forwarded_by_name_without_value_in_argv` | visible change | U10: unrestricted sessions forward no key unless listed |
+| `test_missing_mode_stops_before_engine` | visible change | U1 provider default and its setup message |
+| `test_mode_state_and_delegation_rejections_precede_engine` (provider settings, offline/provider + Podman) | visible change | phase 1-2 union: setup guidance before mode-specific settings |
+| `test_mode_state_and_delegation_rejections_precede_engine` (STATE_DIR + CONFIG_DIR) | visible change | U4: the conflict message names both variables |
+| `test_mode_state_and_delegation_rejections_precede_engine` (CONFIG_DIR = workspace parent) | visible change (user, 2026-11-17) | the core checks workspace overlap only for STATE_DIR, not for the configuration directory |
+| `test_offline_order_arguments_and_forwarding` | visible change | the qualification check follows the name listing |
+| `test_private_cid_ownership_and_collision_errors` | visible change | the core requires the create stdout ID to be valid and equal to the CID record; the created container is still removed |
+| `test_proxy_image_acquisition_requires_maintenance_and_digest` (`--container-build` alone) | visible change | U16: build-only skips restricted preparation |
+| `test_qualification_entry_points` | visible change | U4: no dedicated home default |
+| `test_restricted_credentials_match_the_agent_profile` | visible change | source inspection of the old launcher; AGENT_CREDENTIALS (U10) |
+| `test_setup_entry_point_is_dedicated_and_help_takes_precedence` | visible change | help text from the core |
+| `test_shell_does_not_receive_yolo_or_cli_arguments` | visible change | U14: shell receives its arguments; still no bypass |
+| `test_state_choices_and_configuration_directory` | visible change | U4: shared state by default |
+| `test_state_preflight_failures_before_images` (pwd failure) | visible change (user, 2026-11-17) | the core exits 23 with no message when the state path cannot be resolved |
+| `test_stubborn_sessions_and_control_failures_are_bounded` | visible change | U9 rewrite; wording |
+| `test_timeout_prerequisite_without_help_side_effects` | visible change | wording ("GNU timeout is required") |
+| `test_unrestricted_keeps_forwarding_without_bus` | visible change | U10 (DBus removal covered by the rewritten wrapper test) |
+
+The other "to verify at adoption" cases passed against the core. The hook
+cases `test_four_independent_permission_combinations` and
+`test_antigravity_settings_win_over_toolchain_variables` passed and are
+rewritten in the reduced `tests/test_wrapper.py`.
+
+Environment: WSL2 6.6.87.2, Podman server 4.9.3 (client 4.3.1); image rebuilt
+through the build-only path: `localhost/antigravity-cli:latest` `e263b4d334c2`,
+`build-inputs-hash`
+`d8e79c17c34f876d57866f6dcffce091f360c33d2009d4a447ef126416a514ea`; guard
+toolchain tagged from the setup image of this host.
+
+| Check | Result |
+| --- | --- |
+| `--container-build` alone (real engine, maintenance) | Passed: built, labeled, no session container |
+| `python3 -m unittest tests.test_alignment tests.test_agent_profile tests.test_launcher` (disposable container) | Passed: 144 tests, 1 skipped |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 457 tests, 77 skipped |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 119 tests (`test_launcher.py`, `test_wrapper.py`) |
+| `bash tests/run-runtime.sh --shared` | Passed: 295 tests, 29 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 67 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 5 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 29 tests |
+| `bash tests/run-runtime.sh --network` | Passed: 22 tests |
+| `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 21 tests |
+| `git diff --check`, `bash -n` on the entry script, core and agent part | Passed |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending (operator) |
+
+The installed and qualified code changes (entry script, core, agent part,
+profile): installations rerun `--container-setup`.

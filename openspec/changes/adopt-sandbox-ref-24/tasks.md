@@ -25,13 +25,13 @@
 
 ## 4. Integration
 
-- [ ] 4.1 Rebuild the Antigravity test image with `--container-build`. Then run:
+- [x] 4.1 Rebuild the Antigravity test image with `--container-build`. Then run:
   - the unit discovery in the disposable test container;
   - `bash tests/run-runtime.sh` with `--wrapper`, `--shared`, `--setup`, `--setup-runtime`, `--qualification`, `--network` and `--guard`, and the default mode;
   - `git diff --check`.
 
   Verify that all pass. A real-runtime failure that the old-test gate did not show is classified as in task 2.2, asking the user for any case not already covered by a contract decision.
-- [ ] 4.2 Add the `sandbox-ref-24` adoption section to `docs/validation.md`, starting from the tool's template. It holds every result and the old-test classification table from task 2.2. Commit with the tool's message and merge into `main`. Verify that `tests/test_reference_copy.py` passes on `main` with host Python next to the `sandbox-container` checkout, with the sibling check not skipped.
+- [x] 4.2 Add the `sandbox-ref-24` adoption section to `docs/validation.md`, starting from the tool's template. It holds every result and the old-test classification table from task 2.2. Commit with the tool's message and merge into `main`. Verify that `tests/test_reference_copy.py` passes on `main` with host Python next to the `sandbox-container` checkout, with the sibling check not skipped.
 - [ ] 4.3 Copy the Antigravity parity row into `sandbox-container`, `claude-container` and `codex-container` and commit each on `main`. Verify that the reference, Claude, Codex and Antigravity rows are identical in the four repositories.
 
 ## Workflow follow-up
