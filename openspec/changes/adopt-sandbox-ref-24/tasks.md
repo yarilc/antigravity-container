@@ -20,7 +20,7 @@
 ## 3. Antigravity tests and documentation
 
 - [x] 3.1 Rewrite `tests/test_wrapper.py` with the shared `tests/fake_podman.py` and the real agent part (design decision 5). Verify that `python3 -m unittest tests.test_wrapper` passes in the disposable test container.
-- [ ] 3.2 Update the wrapper-owned runtime tests (design decision 6): `tests/run-runtime.sh`, `tests/test_runtime.py`, `tests/test_network_runtime.py`, `tests/test_setup_runtime.py` and `tests/test_setup_wrapper.py`. Verify that `python3 -m unittest tests.test_setup_wrapper` passes in the disposable test container and that `bash -n tests/run-runtime.sh` succeeds.
+- [x] 3.2 Update the wrapper-owned runtime tests (design decision 6): `tests/run-runtime.sh`, `tests/test_runtime.py`, `tests/test_network_runtime.py`, `tests/test_setup_runtime.py` and `tests/test_setup_wrapper.py`. Verify that `python3 -m unittest tests.test_setup_wrapper` passes in the disposable test container and that `bash -n tests/run-runtime.sh` succeeds.
 - [ ] 3.3 Update the README, `docs/setup.md`, `docs/network-contract.md` and `AGENTS.md` (design decision 7). Verify that `grep -rn "dedicated home\|previous networking\|DEDICATED_HOME\|no-cache\|first handled" --exclude-dir=openspec --exclude=validation.md --exclude=CHANGELOG.md .` finds nothing stale.
 
 ## 4. Integration

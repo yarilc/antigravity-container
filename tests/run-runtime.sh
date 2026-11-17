@@ -14,10 +14,11 @@ pattern=test_runtime.py
 selection_env=(--env ANTIGRAVITY_RUNTIME_TESTS=1 --env SANDBOX_RUNTIME_TESTS=1)
 guard_environment=()
 project_mode=ro
-shared=(test_reference_copy test_alignment test_agent_profile test_network_policy test_mux test_tls_client_hello
+shared=(test_reference_copy test_alignment test_launcher test_agent_profile test_network_policy test_mux test_tls_client_hello
     test_tls_proxy test_platform test_qualification test_guard test_session test_network_feasibility test_image_pins)
 case "${1:-}" in
-    --wrapper) pattern=test_wrapper.py ;;
+    # The shared launcher tests and this wrapper's own: test_launcher.py, test_wrapper.py.
+    --wrapper) pattern='test_[lw][ar][au]*.py' ;;
     --shared) pattern='' ;;
     --qualification) pattern=test_qualification.py ;;
     --setup) pattern=test_setup.py; project_mode=rw ;;
