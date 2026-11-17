@@ -9,7 +9,7 @@
 
 ## 2. Launcher on the shared core
 
-- [ ] 2.1 Add `native.exec` and `native.exec_tmp` to `agent/profile.json`, write `agent/launcher.sh` (design decision 2) and replace `antigravity-container.sh` with the reference entry script. Verify that:
+- [x] 2.1 Add `native.exec` and `native.exec_tmp` to `agent/profile.json`, write `agent/launcher.sh` (design decision 2) and replace `antigravity-container.sh` with the reference entry script. Verify that:
   - `python3 -m unittest tests.test_alignment tests.test_agent_profile tests.test_launcher` passes in the disposable test container;
   - `bash antigravity-container.sh --container-help` prints the provider disclosure with the `google-account` and `gemini-api` hosts and the `ANTIGRAVITY_YOLO` and `GEMINI_API_KEY` entries;
   - `diff <(sed s/sandbox-container/antigravity-container/g ../sandbox-container/sandbox-container.sh) antigravity-container.sh` is empty.
