@@ -59,7 +59,8 @@ The Claude and Codex adoptions found what every adoption needs:
      - `AGENT_CREDENTIALS=(gemini-api=GEMINI_API_KEY google-account=)`;
      - `AGENT_POLICY_HOSTS` for the two base profiles;
      - `AGENT_SESSION_ENV=(AGY_CLI_DISABLE_AUTO_UPDATE=true)` and `AGENT_UNSET_ENV=(DBUS_SESSION_BUS_ADDRESS)`; the core places fixed settings after toolchain and forwarded variables, so they win;
-     - empty restricted, provider and reserved arrays.
+     - `AGENT_RESERVED_ENV=(AGY_CLI_DISABLE_AUTO_UPDATE)`, so `ANTIGRAVITY_CONTAINER_ENV_VARS` skips the fixed setting with a notice (`DBUS_SESSION_BUS_ADDRESS` is reserved as an unset name);
+     - empty restricted and provider arrays.
    - Hooks:
      - **`agent_approval_bypass`:** `agent_bypass_args=(--dangerously-skip-permissions)`.
      - **`agent_help`:** documents `ANTIGRAVITY_YOLO`, `GEMINI_API_KEY` (provider with `gemini-api`, or unrestricted through `ANTIGRAVITY_CONTAINER_ENV_VARS`) and the missing D-Bus session and keyring.

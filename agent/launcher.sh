@@ -30,7 +30,8 @@ AGENT_RESTRICTED_ENV=()
 AGENT_PROVIDER_ENV=()
 # No D-Bus session or keyring: agy keeps account tokens in its state files.
 AGENT_UNSET_ENV=(DBUS_SESSION_BUS_ADDRESS)
-AGENT_RESERVED_ENV=()
+# The fixed setting is never forwarded from the host either.
+AGENT_RESERVED_ENV=(AGY_CLI_DISABLE_AUTO_UPDATE)
 
 agent_help() {
     printf '  ANTIGRAVITY_YOLO        enable agy --dangerously-skip-permissions: 1, true or\n'
