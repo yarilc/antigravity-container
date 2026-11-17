@@ -33,7 +33,7 @@ When `ANTIGRAVITY_YOLO` is enabled, the wrapper SHALL add `--dangerously-skip-pe
 - **THEN** the wrapper forwards it unchanged and documents that the variable does not enforce a policy
 
 ### Requirement: Optional host Podman service
-With delegation enabled, the wrapper SHALL select the first nonempty endpoint from `ANTIGRAVITY_CONTAINER_PODMAN_SOCKET`, an explicit Unix `CONTAINER_HOST`, and `${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock`. It SHALL require an absolute, readable, writable Unix socket before canonicalization and verify a rootless service. It SHALL mount the reported absolute host socket path without a nested daemon or privileged mode.
+With delegation enabled, the wrapper SHALL select the first nonempty endpoint from `ANTIGRAVITY_CONTAINER_PODMAN_SOCKET`, an explicit Unix `CONTAINER_HOST`, and `${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock`. It SHALL require an absolute, readable, writable Unix socket before canonicalization and verify a rootless service. It SHALL mount the reported absolute host socket path without a nested daemon or privileged mode. Delegated sessions SHALL get private tmpfs mounts at `/var/lib/containers` and `/run/containers`.
 
 #### Scenario: Service disabled
 - **WHEN** Podman access is disabled and the host socket does not exist
@@ -46,6 +46,10 @@ With delegation enabled, the wrapper SHALL select the first nonempty endpoint fr
 #### Scenario: Child container uses project
 - **WHEN** Podman access is enabled and the agent launches a child container with a workspace bind mount
 - **THEN** the host service resolves the absolute path correctly and the child sees the project files
+
+#### Scenario: Nested Podman storage
+- **WHEN** a delegated session starts
+- **THEN** `/var/lib/containers` and `/run/containers` are private tmpfs mounts, absent from sessions without delegation
 
 #### Scenario: Relative override
 - **WHEN** delegation is enabled with a relative socket override, even one resolving to an accessible socket

@@ -1008,7 +1008,7 @@ toolchain tagged from the setup image of this host.
 | `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped |
 | `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 21 tests |
 | `git diff --check`, `bash -n` on the entry script, core and agent part | Passed |
-| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending (operator) |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Passed (operator, 2026-11-17) |
 
 The installed and qualified code changes (entry script, core, agent part,
 profile): installations rerun `--container-setup`.

@@ -29,19 +29,19 @@ The image SHALL include Google installation and runtime dependencies applicable 
 - **THEN** the declared tools are available, required dynamic libraries are resolvable, `dbus-daemon` and `gnome-keyring-daemon` are absent, and the README distinguishes Google requirements from additional project tools
 
 ### Requirement: Image managed upgrades
-The image SHALL disable automatic `agy` updates during sessions. Updates SHALL happen only by changing the recorded inputs and rebuilding the image explicitly.
+The image SHALL disable automatic `agy` updates during sessions. Updates SHALL happen only by changing the recorded inputs and rebuilding the image explicitly. A rebuild after an input change SHALL download the changed artifacts again and verify their checksums; an explicit rebuild without input changes MAY reuse cached layers.
 
 #### Scenario: Session on a read only root filesystem
 - **WHEN** an ordinary session starts
 - **THEN** `agy` uses the image binary without attempting to replace it and writes state or caches only to the designated paths
 
 #### Scenario: Refresh requested
-- **WHEN** `--container-build` is requested
-- **THEN** the build reuses no cached layer, downloads the recorded artifacts again, verifies their checksums and displays the resulting version
-- **AND** the version equals the recorded version rather than the latest published release
+- **WHEN** `--container-build` is requested after the recorded version or checksum changed
+- **THEN** the build downloads the recorded artifacts again, verifies their checksums and labels the image with the new build-inputs hash
+- **AND** the installed version equals the recorded version rather than the latest published release
 
 ### Requirement: Explicit image build inputs
-The image build context SHALL deny local inputs by default and allow only root-level `Containerfile`, `container-entrypoint.sh` and `.containerignore`, plus `network/relay.py` and `network/mux.py`, which the image copies to `/opt/sandbox-egress/`. The image SHALL NOT contain the guard. New local inputs SHALL require deliberate allowlist changes. Unknown files, credentials, configuration, and other nested files SHALL remain excluded independently of Git tracking or ignore rules.
+The image build context SHALL deny local inputs by default and allow only root-level `Containerfile`, `container-entrypoint.sh` and `.containerignore`, plus `network/relay.py` and `network/mux.py`, which the image copies to `/opt/sandbox-egress/`. The image SHALL NOT contain the guard. New local inputs SHALL require deliberate allowlist changes. The image SHALL carry a `build-inputs-hash` label over `Containerfile`, `.containerignore`, `network/relay.py`, `network/mux.py` and `container-entrypoint.sh`, and a launch SHALL refuse an image whose label does not match. Unknown files, credentials, configuration, and other nested files SHALL remain excluded independently of Git tracking or ignore rules.
 
 #### Scenario: Unknown or sensitive files exist
 - **WHEN** the build context contains unknown files, `.env`, local authentication/configuration, state, or nested directories
@@ -58,6 +58,10 @@ The image build context SHALL deny local inputs by default and allow only root-l
 #### Scenario: Context inventory
 - **WHEN** a real Podman fixture copies all available context inputs into an inspection directory
 - **THEN** the resulting inventory contains exactly the five allowed files and no other local inputs
+
+#### Scenario: Entrypoint change makes the image stale
+- **WHEN** `container-entrypoint.sh` changes after the image was built
+- **THEN** a launch without `--container-build` stops naming the rebuild command
 
 ### Requirement: Runtime image inputs are pinned
 The image recipe SHALL install an exact `@fission-ai/openspec` version recorded in the repository and SHALL reference the base image by registry digest. No floating tag, `latest` specifier or version range SHALL select an image input. Sessions SHALL NOT change the installed `agy` or OpenSpec version.
