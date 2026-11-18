@@ -1049,3 +1049,63 @@ Environment: WSL2 6.6.87.2, Podman server 4.9.3; image `localhost/antigravity-cl
 | Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Passed (operator, 2026-11-18) |
 
 The installed launcher core and setup change: installations rerun `--container-setup`.
+
+## OpenSpec 2.0.0 image pin (2026-11-18)
+
+For `pin-openspec-2-0-0`, OpenSpec 2.0.0 was the newest stable release at least
+72 hours old on 2026-11-18. The `agy` pin stays at 1.5.3 because the 1.5.11
+release had not met that age threshold. Both architecture-specific artifact
+URLs and SHA-512 pins, the tested policy version, and the base digest
+`sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da`
+remain unchanged. The maintenance build verified the `agy` artifact checksum
+and fetched Debian packages over HTTPS.
+
+| Runtime image | Image ID | `agy --version` | `openspec --version` |
+| --- | --- | --- | --- |
+| Before | `e263b4d334c255b7d5fa046004ce351c92c6109cb645212377ec90603272f6e7` | `1.5.3` | `1.16.0` |
+| After | `d7ebc9194ee1e9b2b408f09fa2e168b728050193b49d1b3c5d2fccc984be7801` | `1.5.3` | `2.0.0` |
+
+Validation used WSL2 6.6.87.2 x86_64, Podman client 4.3.1, and the rootless
+Podman 4.9.3 server through its same-host Unix socket. The updated runtime
+image has build-inputs hash
+`e28d7babf30d1121b98f3d49ae1ec14e422b2ae1434af96c05d69746676f4e49`.
+The `agy` binary checksum and Debian package inventory matched between the two
+images.
+
+The reference ShellCheck runner reported the same 97 findings before and
+after the change. The 26 in `agent/launcher.sh` comprise one SC2148 and 25
+SC2034 findings. The remaining findings are in the shared
+launcher core (14) and the agent and shell fixtures (32 and 25).
+
+On a disposable, locally qualified offline installation, OpenSpec 2.0.0
+initialized a temporary project with `--tools none`, created a change, passed
+`openspec validate --all --strict --json`, and listed the change. The temporary
+change used `skip_specs: true`. `agy --version` returned 1.5.3 under the same
+guard (`abi3-seccomp-mux-v1`). The image smoke script passed in unrestricted
+shell mode with synthetic state, exercising the image before the offline
+launcher mounts its guard.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest discover -s tests -p test_image_pins.py` | Passed all 8 tests before and after the pin change |
+| Host `tests.test_reference_copy` and `tests.test_alignment` | Passed all 22 tests with the reference checkout available |
+| Credential-free unit discovery | Passed, 458 cases with 77 skips |
+| `bash tests/run-runtime.sh` | Passed all 21 tests |
+| `bash tests/run-runtime.sh --wrapper` | Passed all 120 tests |
+| `bash tests/run-runtime.sh --shared` | Passed, 296 cases with 29 skips |
+| `bash tests/run-runtime.sh --setup` | Passed all 67 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed all 5 tests in a serial rerun |
+| `bash tests/run-runtime.sh --network-feasibility` | Passed |
+| `bash tests/run-runtime.sh --network-policy` | Passed all 15 tests |
+| `bash tests/run-runtime.sh --network` | Passed all 22 tests, including the `agy` TUI and the synthetic Gemini tool call |
+| `bash tests/run-runtime.sh --mux` | Passed all 26 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed all 29 tests |
+| `bash tests/run-runtime.sh --guard` | Passed, 20 cases with the idle case run separately |
+| `bash tests/run-runtime.sh --guard-idle` | Passed the real 305-second idle and resume case |
+| `--container-qualify` after all runner modes | Disposable offline installation returned `locally-qualified` with the new image ID |
+| `git diff --check` | Passed |
+| `openspec validate pin-openspec-2-0-0 --strict` | Passed |
+
+The first `--setup-runtime` run overlapped other Podman suites. The first
+provider setup failed qualification after a race for the container name
+`project-0`. The entire setup suite passed when rerun on its own.

@@ -2,7 +2,7 @@
 # README.md ("Updating pinned image inputs") and record the result in docs/validation.md.
 FROM docker.io/library/node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
 
-ARG OPENSPEC_VERSION=1.16.0
+ARG OPENSPEC_VERSION=2.0.0
 # Official agy release artifacts and SHA-512 values, as listed on 2026-11-09 by
 # https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_<arch>.json
 ARG AGY_VERSION=1.5.3

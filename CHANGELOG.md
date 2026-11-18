@@ -32,6 +32,8 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- Pin OpenSpec 2.0.0 in the image. This release generates skills in
+  `.agents/skills/` and removes the generated `/opsx:*` command files.
 - Shared files now come from `claude-container` tag `sandbox-ref-10`: a failed
   setup smoke check shows the wrapper's sanitized stderr, and setup refusals of
   non-private directories name the reason and the `chmod 700` fix.
