@@ -1539,6 +1539,32 @@ class LauncherTests(unittest.TestCase):
                 else:
                     self.assertIn('absolute host socket path', result.stderr)
 
+    def test_reported_host_socket_must_be_a_socket_when_visible(self):
+        # The reported host path becomes a bind source: never the root, and never
+        # a visible non-socket. An invisible path is the remapped-caller case.
+        directory = self.base / 'reported-directory'
+        directory.mkdir()
+        regular = self.base / 'reported-file'
+        regular.write_text('not a socket')
+        dangling = self.base / 'reported-dangling'
+        dangling.symlink_to(self.base / 'missing-target')
+        alias = self.base / 'reported-alias'
+        alias.symlink_to(self.socket_path)
+        refused = ('/', '//', 'unix:///', str(directory), str(regular), str(dangling))
+        for options, reported in [(o, r) for o in ((), ('--container-build',)) for r in refused]:
+            with self.subTest(options=options, reported=reported):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(*options, FIXTURE_SHELL_PODMAN='1', FAKE_HOST_SOCKET=reported)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(str(self.socket_path), result.stderr)
+                self.assertFalse(any(c[0] in ('image', 'build', 'create') for c in self.calls()))
+        for reported in (str(self.socket_path), str(alias), '/host/podman.sock'):
+            with self.subTest(reported=reported):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(FIXTURE_SHELL_PODMAN='1', FAKE_HOST_SOCKET=reported)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f'{reported}:/run/podman/podman.sock:rw', self.create())
+
     def test_socket_fallback_and_invalid_sources(self):
         default = f'/run/user/{os.getuid()}/podman/podman.sock'
         result = self.run_wrapper(FIXTURE_SHELL_PODMAN='1', FIXTURE_SHELL_PODMAN_SOCKET='')

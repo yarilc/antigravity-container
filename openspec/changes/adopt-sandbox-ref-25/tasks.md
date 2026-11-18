@@ -2,10 +2,10 @@
 
 ## 1. Adopt `sandbox-ref-25`
 
-- [ ] 1.1 Commit this change directory on `main`. From `sandbox-container`, run `python3 -I tools/propagate.py ../antigravity-container sandbox-ref-24 sandbox-ref-25` (dry run), then `--apply`. Verify that:
+- [x] 1.1 Commit this change directory on `main`. From `sandbox-container`, run `python3 -I tools/propagate.py ../antigravity-container sandbox-ref-24 sandbox-ref-25` (dry run), then `--apply`. Verify that:
   - the plan lists exactly the files in design "Context";
   - the tool switched to `adopt-sandbox-ref-25`.
-- [ ] 1.2 Fix the parity table in `docs/network-contract.md` by hand (design decision 3): the reference row names `sandbox-ref-25` and the other wrappers' rows equal those in their repositories. Leave Antigravity's row for task 2.2. Verify that `python3 -m unittest tests.test_reference_copy tests.test_alignment` passes with host Python next to the `sandbox-container` checkout, with the sibling check not skipped.
+- [x] 1.2 Fix the parity table in `docs/network-contract.md` by hand (design decision 3): the reference row names `sandbox-ref-25` and the other wrappers' rows equal those in their repositories. Leave Antigravity's row for task 2.2. Verify that `python3 -m unittest tests.test_reference_copy tests.test_alignment` passes with host Python next to the `sandbox-container` checkout, with the sibling check not skipped.
 
 ## 2. Validation and integration
 

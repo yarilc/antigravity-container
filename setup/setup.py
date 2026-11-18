@@ -345,8 +345,12 @@ def verify_socket(url, env):
     rootless, separator, host_path = output.partition(' ')
     # Podman 5 reports the service socket as a unix:// URL; earlier releases report the bare path.
     host_path = host_path.removeprefix('unix://')
-    if rootless != 'true' or not separator or not host_path.startswith('/'):
-        raise SetupError('The exact Podman socket must serve a rootless engine and report an absolute host socket path.')
+    # The reported path is a bind source: never the host root, and never a visible
+    # non-socket. A path not visible here is the remapped case of a containerized caller.
+    usable = (host_path.startswith('/') and host_path.strip('/') != ''
+              and (not os.path.lexists(host_path) or Path(host_path).is_socket()))
+    if rootless != 'true' or not separator or not usable:
+        raise SetupError('The exact Podman socket must serve a rootless engine and report a usable absolute host socket path.')
 
 
 def manual_service(url):

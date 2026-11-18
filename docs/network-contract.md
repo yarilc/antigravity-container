@@ -18,7 +18,7 @@ in `openspec/specs/`.
 ## Reference and intentional differences
 
 The shared components are copied unchanged from `sandbox-container` at tag
-`sandbox-ref-24` (commit `dd5d82eaadc4b25724e2c702ff4039d4c21836aa`):
+`sandbox-ref-25` (commit `6bed77040c3482591e36c9c3500bca89dec61941`):
 
 - `network/` (except the build output `network/bin/`);
 - `setup/`;
