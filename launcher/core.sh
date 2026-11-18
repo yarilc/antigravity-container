@@ -552,6 +552,13 @@ core_engine_delegation() {
         # A wrapper already inside a container sees a remapped Unix socket. Bind
         # sources are resolved by the service, so use its host-side socket path.
         [[ "$host_socket" == /* && "$host_socket" != *$'\n'* ]] || die "Podman socket $socket did not report an absolute host socket path"
+        # The reported path is a bind source: never the host root, and never a
+        # path this wrapper sees as something other than a socket. A path that is
+        # not visible here is the remapped case of a containerized wrapper.
+        [[ ! "$host_socket" =~ ^/+$ ]] || die "Podman socket $socket reported the root directory as its host socket path"
+        if [[ -e "$host_socket" || -L "$host_socket" ]]; then
+            [[ -S "$host_socket" ]] || die "Podman socket $socket reported a host socket path that is not a socket here: $host_socket"
+        fi
     fi
 }
 

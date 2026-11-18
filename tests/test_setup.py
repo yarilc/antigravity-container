@@ -379,12 +379,21 @@ class SetupTests(unittest.TestCase):
         endpoint = Path(temporary.name) / 'podman.sock'
         with socket.socket(socket.AF_UNIX) as bound:
             bound.bind(str(endpoint))
+            directory = Path(temporary.name) / 'reported-directory'
+            directory.mkdir()
+            regular = Path(temporary.name) / 'reported-file'
+            regular.write_text('not a socket')
             for response in ('false /host/socket', 'true relative', 'true /host/socket\r', 'true /host/socket\n\n',
-                             'true unix://relative', 'true unix:///host/socket\r'):
+                             'true unix://relative', 'true unix:///host/socket\r',
+                             # The reported path is a bind source: never the root or a visible non-socket.
+                             'true /', 'true //', 'true unix:///', f'true {directory}', f'true {regular}'):
                 with patch.object(setup, 'run', return_value=response):
                     with self.assertRaises(common.SetupError):
                         setup.verify_socket('unix://' + str(endpoint), self.env)
             setup.verify_socket('unix://' + str(endpoint), self.env)
+            # A visible reported path that is the socket itself is accepted.
+            with patch.object(setup, 'run', return_value=f'true {endpoint}'):
+                setup.verify_socket('unix://' + str(endpoint), self.env)
             # Podman 5 reports the host socket as a unix:// URL.
             with patch.object(setup, 'run', return_value='true unix:///host/socket'):
                 setup.verify_socket('unix://' + str(endpoint), self.env)

@@ -1012,3 +1012,40 @@ toolchain tagged from the setup image of this host.
 
 The installed and qualified code changes (entry script, core, agent part,
 profile): installations rerun `--container-setup`.
+
+## Adoption of `sandbox-ref-25`: 2026-11-18
+
+Change `adopt-sandbox-ref-25`. Copied from `sandbox-container` tag `sandbox-ref-25`
+(commit `6bed770`): `launcher/core.sh`, `setup/setup.py`, `tests/test_launcher.py`,
+`tests/test_setup.py`. The `tests/test_reference_copy.py` manifest moved to the
+tag; the parity rows were checked by hand.
+
+With delegation enabled, the launcher and guided setup now refuse a reported host
+socket path made only of slashes, and one that exists in the wrapper's namespace
+as a non-socket (change `verify-delegated-socket-path` in `sandbox-container`). A
+path the wrapper cannot see is still accepted as the remapped socket of a
+containerized wrapper. No Antigravity file changed; the Antigravity tests ran
+unchanged.
+
+The old case `test_complete_socket_response_required` (`true /`, `true unix:///`),
+recorded as a visible change in the `sandbox-ref-24` adoption, is now covered by
+the shared case `test_reported_host_socket_must_be_a_socket_when_visible`: a
+slash-only reported path fails before image operations and the host root is never
+mounted.
+
+Environment: WSL2 6.6.87.2, Podman server 4.9.3; image `localhost/antigravity-cli:latest`
+`e263b4d334c2`, rebuilt through the build-only path (`build-inputs-hash`
+`d8e79c17c34f876d57866f6dcffce091f360c33d2009d4a447ef126416a514ea`, unchanged).
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest tests.test_reference_copy tests.test_alignment` (host Python, siblings present) | Passed: 22 tests, no skips |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 458 tests, 77 skipped |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 120 tests |
+| `bash tests/run-runtime.sh --setup` | Passed: 67 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 5 tests |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 21 tests |
+| `git diff --check` | Passed |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending (operator) |
+
+The installed launcher core and setup change: installations rerun `--container-setup`.
