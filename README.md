@@ -218,10 +218,12 @@ The session receives `USER`, `EDITOR=nano`, `VISUAL=nano`,
 `LC_ALL` when set; `DBUS_SESSION_BUS_ADDRESS` is removed. Unrestricted sessions
 also receive `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` and their
 lowercase forms, run with `--init`, and see their container name as
-`CONTAINER_NAME`. `ANTIGRAVITY_CONTAINER_ENV_VARS` lists further host variable
-names (separated by whitespace) to forward by name, never by value; an invalid
-name stops the launch, an empty variable is not forwarded, and names the
-launcher sets itself (and, in restricted modes, proxy, CA and provider settings,
+`CONTAINER_NAME`. In offline and provider sessions the confined guard plays the
+role of `--init`: Ctrl+C and the shutdown signals reach `agy`, and the session
+ends with its status. `ANTIGRAVITY_CONTAINER_ENV_VARS` lists further host
+variable names (separated by whitespace) to forward by name, never by value; an
+invalid name stops the launch, an empty variable is not forwarded, and names
+the launcher sets itself (and, in restricted modes, proxy, CA and provider settings,
 or in provider mode another profile's credential) are skipped with a notice.
 
 ## Network modes
@@ -577,6 +579,237 @@ toolchains added after the session started.
 SELinux and AppArmor enforcement were not tested with the library mount. On
 hosts that enforce them, profile the tools you add.
 
+## Windows with Podman machine
+
+On Windows, `antigravity-container.ps1` starts the sandbox from PowerShell on
+the rootless engine of a Podman machine that Podman Desktop created with the
+WSL provider. The session runs inside the machine's WSL distribution
+(`podman-machine-default`, user `user`), in the PID and mount namespaces where
+the machine runs systemd and its Podman service, as the machine's own login
+shells do. The entry uses neither `podman.exe` nor the machine's SSH or
+Windows API connection, so it works while other WSL distributions, such as
+Ubuntu, are running.
+
+Prerequisites:
+
+- Windows PowerShell 5.1 or PowerShell 7, with a policy that allows local
+  scripts, for example `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`;
+- a rootless Podman machine with the WSL provider, created with Podman
+  Desktop, and started by Podman (Podman Desktop or `podman machine start`)
+  before setup and sessions;
+- `sudo` without a password for the machine's user, which Podman machines
+  provide: sessions and setup enter the machine's systemd namespaces with
+  `sudo nsenter`, as its login shells do (`/usr/local/bin/enterns`);
+- a checkout of this repository in a folder on a Windows drive, with LF line
+  endings. The repository's `.gitattributes` keeps them LF even with
+  `core.autocrlf=true`; [docs/setup.md](docs/setup.md) explains how to fix an
+  older CRLF checkout.
+
+Run setup once from the checkout, in an interactive PowerShell window:
+
+```powershell
+cd C:\Work\antigravity-container
+.\antigravity-container.ps1 --container-setup
+```
+
+Setup runs the guided setup inside the machine distribution. The release,
+preferences and images are installed there, in
+`~/.local/lib/antigravity-container`. Its output leaves out the Linux shell
+guidance; the entry prints how to start sessions. Setup finds the machine's
+own Podman service, so it offers provider networking, the default, with the
+`account` or `gemini` method, and offline and unrestricted networking, as on
+Linux.
+
+With the `account` method, sign-in happens inside an interactive `agy`
+session, because `agy` has no login command. Setup offers to start one in the
+machine: choose Google sign-in there, open the printed URL in a Windows
+browser, sign in, enter the code shown in the PowerShell window, then exit
+`agy`. The tokens stay in the machine user's Antigravity state (`~/.gemini` in
+shared state mode), separate from Antigravity or Gemini CLI on Windows. When
+you postpone the sign-in, setup names the next step: start
+`antigravity-container.ps1` from a project folder and sign in inside the
+session. With the `gemini` method, set `$env:GEMINI_API_KEY = '...'` in
+PowerShell before `antigravity-container.ps1`. The entry forwards the key by
+name, and setup stores none. The key alone does not select the provider:
+merge `"modelProvider": "gemini"` into the settings file in the machine, which
+`antigravity-container.ps1 --container-shell` shows at
+`/antigravity-home/.gemini/antigravity-cli/settings.json`, or pass
+`--settings '{"modelProvider":"gemini"}'` for one session (see
+[Authentication](#authentication)). Rerun setup after updating the checkout,
+and after the machine is recreated. To run the sandbox as a command without
+keeping the checkout, install it instead
+([Install as a command](#install-as-a-command)).
+
+Start sessions from a project directory on a Windows drive:
+
+```powershell
+cd C:\Work\my-project
+C:\Work\antigravity-container\antigravity-container.ps1
+C:\Work\antigravity-container\antigravity-container.ps1 --container-shell -c 'git status'
+C:\Work\antigravity-container\antigravity-container.ps1 --container-help
+```
+
+The project is mounted at its drive path, for example `/mnt/c/Work/my-project`.
+A launch is refused before any engine query in these cases:
+
+- the machine is stopped: the entry does not start its distribution, because
+  `wsl.exe` would start it without the user's runtime directory
+  `/run/user/<uid>`, where no `podman` command works. Start the machine with
+  Podman Desktop or `podman machine start`;
+- the distribution runs without that directory, because `wsl.exe` alone
+  started it. Run `wsl --terminate podman-machine-default`, then start the
+  machine with Podman. Setup refuses both states too;
+- `sudo` asks the machine's user for a password, so the entry cannot enter the
+  machine's systemd namespaces. Setup refuses it too;
+- the location is a network share, a path inside a WSL distribution, a drive
+  the distribution does not mount, or not a file system path;
+- the project or the worktree parent contains the checkout, or lies inside it;
+- the project is a Windows system or profile folder (see
+  [Session hardening, budgets and lifetime](#session-hardening-budgets-and-lifetime)).
+
+The exit status, the terminal and Ctrl+C work as on Linux. Closing the window
+also ends the session and removes its container. The machine's engine uses
+the `cgroupfs` manager: the memory and CPU budgets are not enforced, and the
+process budget uses the process rlimit, as the launch notices state (see
+[Session hardening, budgets and lifetime](#session-hardening-budgets-and-lifetime)).
+`agy`'s internal terminal sandbox was not measured in the machine. Omit
+`--sandbox` there as on Linux
+([Known internal sandbox incompatibility](#known-internal-sandbox-incompatibility));
+in `offline` and `provider` the guard stops it anyway.
+
+| Variable | Meaning |
+| --- | --- |
+| `ANTIGRAVITY_CONTAINER_NETWORK` | `provider`, `offline` or `unrestricted` for one launch (default: the mode setup saved); a restricted mode needs a setup that prepared it |
+| `ANTIGRAVITY_CONTAINER_WSL_DISTRO` | WSL distribution (default `podman-machine-default`) |
+| `ANTIGRAVITY_CONTAINER_WSL_USER` | user in the distribution (default `user`) |
+| `ANTIGRAVITY_CONTAINER_WSL_INSTALLATION` | absolute installation path in the distribution, when setup used another one |
+
+Set them with `$env:NAME = 'value'`. The entry forwards to the launcher in the
+distribution, by name, the other `ANTIGRAVITY_CONTAINER_*` variables whose
+names use only letters, digits and `_`, `ANTIGRAVITY_YOLO`, `GEMINI_API_KEY`,
+and the names listed in `ANTIGRAVITY_CONTAINER_ENV_VARS`.
+`ANTIGRAVITY_CONTAINER_CONFIG_DIR` is forwarded only when it holds a
+distribution path (starting with `/`): a Windows path is skipped with a
+notice, and the directory saved by setup applies. `$env:GEMINI_API_KEY = '...'`
+before the entry supplies the key as an exported variable does on Linux; the
+help lists it. It forwards no other Windows variable. Path values, such as
+`ANTIGRAVITY_CONTAINER_STATE_DIR`, are distribution paths, such as
+`/home/user/...`.
+
+Limits on Windows:
+
+- No Podman delegation: `ANTIGRAVITY_CONTAINER_PODMAN=1` is refused, and a
+  release whose setup saved delegation, for example from a Linux shell in the
+  machine, asks to rerun setup from Windows.
+- PowerShell pipeline input, such as
+  `'x' | .\antigravity-container.ps1 --container-shell -c cat`, is refused,
+  because PowerShell alters it. Redirect a file from `cmd.exe` instead:
+  `cmd /c "powershell -File C:\Work\antigravity-container\antigravity-container.ps1 --container-shell -c cat < input.txt"`.
+- PowerShell parses the arguments first. Quote a `--` meant for `agy` or Bash
+  (`'--'`), values with commas (`'a,b'`), numbers whose spelling matters
+  (`'007'`) and arguments of the form `-x:y`. The encoded arguments are
+  limited to 32766 characters.
+- A variable with an empty value counts as unset.
+- `podman machine stop` (`wsl --terminate`) ends running sessions.
+- After the machine starts, the folder of its first session may stay in use
+  by a WSL process until `wsl --shutdown`, so Windows cannot delete that
+  folder meanwhile.
+- Projects on a Windows drive go through drvfs, which is slow on large trees.
+  Git for Windows clones with `core.autocrlf=true` look modified to Git in the
+  session: set `core.autocrlf=false` for the project, or give it a
+  `.gitattributes`.
+- Bitdefender's Advanced Threat Control (`Atc4.Detection`) has blocked the
+  operator validation script `tools/windows-validate.ps1` of
+  `sandbox-container`, and quarantined files while validation bundles were
+  extracted with `tar`, for example `tests/fixtures/shell-agent/launcher.sh`,
+  which only the Linux tests use. Setup, the installer and sessions ran with it
+  active, and another Windows system with other antivirus products ran the
+  validation without problems. Run the validation script with the checkout
+  folder excluded, or with the protection paused for the run, as your
+  administrator allows. Setup and the entry fail when a file they need is
+  missing: restore it from the quarantine, and report the false positive to
+  the vendor.
+
+### Trusting a host CA on Windows
+
+Setup and sessions run in the machine, so host CA trust uses a bundle of the
+machine, not the Windows certificate store. On a network that intercepts TLS
+(a corporate proxy that re-signs certificates), the machine trusts the
+interception CA only when Podman imports the Windows store into it. Without
+it, image pulls and builds in the machine and HTTPS requests in sessions fail
+with a certificate verification error. With Podman 6.0 or later, enable the
+import once. `podman machine set` fails while the machine runs, so stop it
+first:
+
+```powershell
+podman machine stop
+podman machine set --import-native-ca
+podman machine start
+```
+
+The import happens at every machine start: Podman copies the CAs that Windows
+trusts into the machine and runs `update-ca-trust`, so the machine's system
+bundle contains them. Restart the machine after Windows gains a new CA.
+
+Then run setup and answer yes to "Trust a host CA bundle?". Keep the bundle
+setup proposes, the machine's system bundle (see
+`ANTIGRAVITY_CONTAINER_TRUST_HOST_CA` in [Environment](#environment)): setup
+passes it to the image builds, including the `agy` download, and saves it for
+sessions. Rerun setup after the machine is recreated, and enable the
+import again on the new machine.
+
+### Install as a command
+
+Instead of setup from the checkout, you can install the entry for your
+Windows account:
+
+```powershell
+cd C:\Work\antigravity-container
+.\antigravity-container.ps1 --container-install
+```
+
+The install copies the entry, the Windows scripts and every file that setup
+needs into `%LOCALAPPDATA%\Programs\antigravity-container`. It then adds that
+folder to your user `PATH` (`HKCU\Environment`, no administrator rights; the
+other entries and their `%VAR%` references stay as they are) and runs setup
+from the copy. The installer announces the `PATH` change before making it;
+nothing is written to the PowerShell profile or system-wide. Afterwards the
+checkout can be deleted, and a new PowerShell window runs the command from any
+project directory:
+
+```powershell
+cd C:\Work\my-project
+antigravity-container
+antigravity-container --container-shell -c 'git status'
+antigravity-container --container-setup
+```
+
+New PowerShell windows and new Windows Terminal tabs find the command; the
+window or tab that ran the install may not. When setup fails after the copy,
+the copy and the `PATH` entry stay; finish with
+`antigravity-container --container-setup`.
+
+To update, run `--container-install` again from a newer checkout or download.
+It replaces the installed files, removes the ones the new version no longer
+has, and runs setup. Do not update while a setup runs from the installed
+copy. The installed command refuses to install itself. An
+interrupted install leaves the copy marked incomplete: the command then
+refuses to start sessions until the next install completes. Two installs never
+run at once.
+
+`antigravity-container --container-uninstall` (also from a checkout) removes the
+`PATH` entry and the installed copy. The installation inside the Podman machine
+stays until the machine is reset. A folder still used by a WSL process is
+reported; `wsl --shutdown` releases it.
+
+The scripts are not signed. The installer writes new local files, so the
+installed command runs under the default `RemoteSigned` policy. A downloaded
+zip keeps the Mark of the Web on its files: run its first install as
+`powershell -ExecutionPolicy Bypass -File .\antigravity-container.ps1 --container-install`,
+or `Unblock-File` its files first. Running the installer is your decision to
+trust that source. Policies stricter than `RemoteSigned`, such as `AllSigned`,
+are unsupported.
+
 ## Mounts, worktrees, and identity
 
 The physical current directory is mounted read/write at the same absolute path
@@ -656,8 +889,10 @@ readable, writable Unix socket. The service must return one complete rootless
 result and an absolute host socket path; extra response lines are rejected.
 The wrapper uses that reported path as the bind source, preserving spaces and
 supporting paths remapped inside an outer container.
-TCP/SSH transports, named remote connections, Podman Machine, and rootful
-engines are rejected.
+TCP/SSH transports, named remote connections, the Podman machine connection
+that `podman.exe` uses, and rootful engines are rejected. On Windows, the
+PowerShell entry runs the sandbox inside the Podman machine instead; see
+[Windows with Podman machine](#windows-with-podman-machine).
 
 ### Session hardening, budgets and lifetime
 
@@ -678,12 +913,41 @@ budget unenforced: the wrapper does not request it, prints a notice such as
 `antigravity-container: agent CPU budget not enforced: cgroup controller cpu is
 not delegated to the rootless engine`, and continues without a question.
 Provider proxies follow the same rule for their 128-process and 256 MiB limits.
-Without the memory or process budget, a session can exhaust host memory or
-processes for your user. After creating the container, the wrapper checks that
-every enforced budget was applied and that no unenforced one is present, and
-stops before agy starts otherwise. Restricted qualification records the
-enforced set, so a change in delegation requires requalification. Budgets and
-tmpfs sizes do not limit workspace or state storage growth.
+After creating the container, the wrapper checks that every enforced budget was
+applied and that no unenforced one is present, and stops before agy starts
+otherwise. Restricted qualification records the enforced set, so a change in
+delegation requires requalification. Budgets and tmpfs sizes do not limit
+workspace or state storage growth.
+
+A rootless engine applies cgroup limits only through the `systemd` cgroup
+manager (`podman info --format '{{.Host.CgroupManager}}'`). With `cgroupfs`,
+for example on a Podman machine on WSL, the engine reports every controller but
+ignores the limits. The sandbox therefore treats no controller as delegated: it
+prints `agent memory budget not enforced: the rootless engine uses the cgroupfs
+cgroup manager, which applies no cgroup limits` and the matching CPU line, and
+the process budget uses the fallback below.
+
+The process budget has a fallback. Without the `pids` controller, the agent
+container gets a soft and hard process rlimit (`--ulimit nproc=N:N`) at the
+selected budget, and the notice reads `agent process budget enforced through the
+process rlimit (512 tasks of the session user, threads included)`. The limit is
+per session: Linux 5.14 and later count it per user namespace, and every
+container has its own. The session cannot raise it, because it has no
+capabilities. Container startup uses a few of these tasks, so slightly fewer
+than `N` processes are available. The fallback applies only when the engine
+reports kernel 5.14 or later (`podman info --format '{{.Host.Kernel}}'`). Older
+or unrecognized kernels may count every process of your user, so the process
+budget then stays unenforced, and the notice names the reason. The memory and
+CPU budgets have no fallback. The provider proxy's process budget uses the same
+fallback. Which mechanism enforces each process budget is part of the restricted
+qualification identity, and each launch checks the configured rlimit as it
+checks the cgroup limits.
+
+Risk: without the memory or process budget, a session can exhaust host memory
+or processes for your user; without a CPU budget it can saturate every CPU.
+Delegating the controllers (for example a systemd
+`Delegate=cpu cpuset io memory pids` drop-in for `user@.service`) restores full
+enforcement, but the sandbox never requires it.
 
 `ANTIGRAVITY_CONTAINER_RUN_TIMEOUT` optionally sets the session container
 lifetime in whole seconds; unset, empty or `0` disables it. When the engine
@@ -696,7 +960,27 @@ when its physical path is `/`, `/home`, `/root`, `/etc`, `/usr`, `/var`, `/bin`,
 `/sbin`, `/lib`, `/lib64`, `/boot`, `/opt`, `/srv`, `/mnt`, `/media`, `/proc`,
 `/sys`, `/dev`, `/run`, `/tmp`, your physical home directory, or a WSL drive
 root such as `/mnt/d`. Subdirectories such as `/mnt/d/Workspace/project` are
-allowed. Launch from a project directory, or set exactly
+allowed.
+
+On a WSL drive mount, it also must not be one of these Windows folders, in any
+letter case, because drvfs ignores case:
+
+- `/mnt/<drive>/Users`;
+- a profile, `/mnt/<drive>/Users/<name>`, its `Documents`, its `OneDrive`
+  (also `OneDrive - <organization>`) or `OneDrive/Documents`, which hold the
+  PowerShell profile and modules;
+- anything inside the profile's `AppData`, which holds the startup folder;
+- `/mnt/<drive>/Windows`;
+- `/mnt/<drive>/Program Files` or `/mnt/<drive>/Program Files (x86)`;
+- `/mnt/<drive>/ProgramData`.
+
+Apart from `AppData`, only these exact folders are refused. A project below
+them, such as `/mnt/c/Users/me/projects/app` or
+`/mnt/c/Users/me/Documents/GitHub/app`, is accepted. In worktree mode, however, a
+project placed directly in a profile is refused, because its parent is the
+profile.
+
+Launch from a project directory, or set exactly
 `ANTIGRAVITY_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1` to expose a refused directory
 deliberately; the wrapper then prints a warning.
 
@@ -734,6 +1018,10 @@ socket is the default service endpoint instead. An explicit
 forwarded only by name, as described in [First run](#direct-operator-launches)
 and [Network modes](#network-modes); the entire environment and `.env` files are
 not imported by the wrapper. `EDITOR` and `VISUAL` use the included nano editor.
+
+With host CA trust on a Podman machine on Windows, the host is the machine: it
+must first import the CAs that Windows trusts
+([Trusting a host CA on Windows](#trusting-a-host-ca-on-windows)).
 
 ## Image and dependencies
 
