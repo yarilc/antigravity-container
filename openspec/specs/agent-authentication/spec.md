@@ -26,6 +26,11 @@ The container SHALL support Google's remote authentication flow with a URL and m
 - **THEN** the installed wrapper starts `agy` interactively with the saved mode and policies, and the operator completes the URL and code flow there
 - **AND** the tokens are stored in the selected state as for any other interactive sign-in
 
+#### Scenario: Sign-in from the Windows entry
+- **WHEN** a user starts `antigravity-container.ps1` from a project folder on a Windows drive, with no sign-in in the selected state of the Podman machine
+- **THEN** `agy` shows the sign-in URL in the PowerShell window, the user opens it in a Windows browser and enters the code in that window
+- **AND** the tokens are stored in the selected state in the machine distribution, separate from any Antigravity or Gemini state on Windows, and a later session from Windows reuses them
+
 ### Requirement: Persistent credentials and logout
 The container SHALL retain `agy` account tokens and authentication profiles as files in the selected persistent state with access limited to the user. Documentation SHALL state that these files are protected only by Unix permissions, not by a passphrase, and SHALL respect the CLI's native logout behavior. Keyring files from earlier versions SHALL be left in place, unused, with removal guidance.
 
