@@ -1109,3 +1109,133 @@ launcher mounts its guard.
 The first `--setup-runtime` run overlapped other Podman suites. The first
 provider setup failed qualification after a race for the container name
 `project-0`. The entire setup suite passed when rerun on its own.
+
+## Adoption of `sandbox-ref-28`: 2026-11-22
+
+Change `adopt-sandbox-ref-28`, from `sandbox-ref-25` directly. It takes in
+`sandbox-ref-26`, `sandbox-ref-27` and `sandbox-ref-28`:
+- the process rlimit fallback and systemd-only cgroup delegation;
+- the shared launcher files passing ShellCheck;
+- Windows support on a Podman machine;
+- the Windows setup guidance for agent wrappers.
+
+Copied from `sandbox-container` tag `sandbox-ref-28` (commit `ba1ef14`):
+- updated: `launcher/core.sh`, `network/README.md`, `network/agent_budgets.py`,
+  `network/control.py`, `network/guard.c`, `network/proxy_hardening.py`,
+  `network/qualification_probe.py`, `network/qualification_records.py`,
+  `network/session.py`, `setup/common.py`, `setup/launch.py`, `setup/setup.py`,
+  `setup/smoke.py`, `tests/fake_podman.py`, both fixture `launcher.sh`,
+  `tests/test_alignment.py`, `tests/test_guard.py`, `tests/test_launcher.py`,
+  `tests/test_qualification.py`, `tests/test_session.py` and
+  `tests/test_setup.py`;
+- added: the five `launcher/windows/` files, `tests/test_windows_bootstrap.py`,
+  `tests/test_windows_enter.py` and `tests/windows/shim_tests.ps1`.
+
+The `tests/test_reference_copy.py` manifest moved to the tag. The tool also
+rewrote the OpenCode and Pi parity rows, which stay on `sandbox-ref-25`; they
+were restored by hand.
+
+By hand, as `docs/propagation.md` says:
+- `antigravity-container.ps1` is a byte-for-byte copy of
+  `sandbox-container.ps1`;
+- `.gitattributes` was copied. The LF rewrite changed nothing: every tracked
+  file was already LF in the index and the working tree;
+- `agent/launcher.sh` gained the ShellCheck header of the reference agent part,
+  which clears its 26 findings (25 `SC2034`, 1 `SC2148`).
+
+Antigravity's own tests changed where the shared behavior did, as in Claude
+and Codex:
+- `tests/test_setup_wrapper.py` is the Claude and Codex file, byte for byte:
+  the files were identical before. It adds a failing `systemctl`, the budget
+  plan with the rlimit fallback and `cgroupfs`, and the case for setup without
+  a launch service;
+- `tests/test_runtime.py`: the budget checks follow the delegated controllers
+  and the process mechanism, and the process probe uses a budget of 128 with
+  200 children.
+
+`test_build_context_allows_only_required_inputs` also changed, by the
+operator's decision. It copied its inputs with `shutil.copyfile`, which drops
+the entrypoint's executable bit, then required `test -x` in the image. On this
+runner it failed on `main` too, with the old and the rebuilt image, so the tag
+did not cause it; it had passed on 2026-11-18 on another host. It now copies
+with `shutil.copy2`, which keeps the mode.
+
+The README, `docs/setup.md` and `AGENTS.md` cover:
+- the Windows entry for Antigravity, with the sign-in inside an interactive
+  `agy` session, `$env:GEMINI_API_KEY` and `modelProvider`;
+- the installer;
+- host CA trust on Windows;
+- the Windows limits, including Bitdefender and `agy`'s internal sandbox, not
+  measured in the machine;
+- the `cgroupfs` budgets, the rlimit fallback and the guard as init;
+- the setup changes.
+
+**This runner.** WSL2 `6.18.58.1-microsoft-standard-WSL2`, Podman server
+4.9.3, the `systemd` cgroup manager and controllers `[cpu memory pids]`.
+- The engine had no `localhost/antigravity-cli:latest`. Its two `setup-*` tags
+  of image `22fa19363fe8` predate the OpenSpec 2.0.0 pin (`build-inputs-hash`
+  `d8e79c17...`, inputs `e28d7bab...`). The adoption changes no build input.
+- `localhost/antigravity-cli:latest` `c8eafdb59869` was rebuilt with
+  `--container-build`, `build-inputs-hash` `e28d7bab...`, `agy` 1.5.3 and
+  OpenSpec 2.0.0. The runner's network intercepts TLS, so the build used host
+  CA trust with the session's CA bundle as the build secret.
+- For the guard toolchain,
+  `localhost/antigravity-guard-toolchain:setup-8bb44eb5e9604540bb1b2290d99b688e`
+  was also tagged `localhost/antigravity-guard-toolchain:development`, the name
+  that `--guard`, `--qualification` and `--network` use.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest tests.test_reference_copy tests.test_alignment` (host Python, siblings present) | Passed: 26 tests, no skips |
+| `bash tools/shellcheck.sh ../antigravity-container`, `bash tools/powershell.sh ../antigravity-container` (from `sandbox-container`) | Passed: no finding, 62 shim cases |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 513 tests, 85 skipped. A first run, while other Podman work loaded the computer, failed five boundary attempts of the timing-sensitive shared `test_lifetime_notice_preserves_status`, which passed in `--wrapper`; the rerun on its own passed |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 124 tests, 1 skipped |
+| `bash tests/run-runtime.sh --shared` | Passed: 311 tests, 35 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 88 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 5 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 31 tests |
+| `bash tests/run-runtime.sh --guard` | Passed: 25 tests, 1 skipped (`--guard-idle`) |
+| `bash tests/run-runtime.sh --network` | Passed: 22 tests, including the `agy` TUI and the synthetic Gemini tool call |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 21 tests, including the budget checks above and the build-context test with the fix above |
+| `git diff --check` | Passed |
+
+**Windows** (operator, 2026-11-22 and 2026-11-23). Windows WSL 3.0.5.0, kernel
+6.18.58.1-1, Landlock ABI 7. The Podman Desktop machine
+`podman-machine-default` uses the `cgroupfs` manager, with Ubuntu running. The
+checkouts were snapshots of this branch and of `sandbox-container` in
+`C:\Work`.
+
+| Step | Result |
+| --- | --- |
+| Setup from `antigravity-container.ps1`: provider networking with the `account` method, shared state, host CA trust with `/etc/ssl/certs/ca-certificates.crt`, permission bypass on, images refreshed, sign-in postponed | The plan printed `enforced agent budgets: none`, the `cgroupfs` notices and the process rlimit for the agent (512) and the proxy (128). Images prepared in the machine, `Sandbox qualification: locally-qualified`, `Sandbox: ready`. The next step read `Next authentication action: antigravity-container.ps1 (sign in inside the interactive session, or reuse your selected existing account state).`, with no distribution path |
+| Sign-in from a project folder | The machine's `~/.gemini` already held a sign-in from an earlier setup. After `/logout`, a new `antigravity-container.ps1` session signed in again through Google's URL and code, with the URL opened in a Windows browser (confirmed by the operator; the TUI screens are not in the copied window text) |
+| An `agy` session with tool use | Provider session with `google-account`, `agy` 1.5.3. `agy` ran `find` on the project and read its file, then ended with Ctrl+C; `$LASTEXITCODE` 0. `podman ps -a` then listed no container of the session |
+| Token reuse | A second session started signed in and answered `Say hello`; `$LASTEXITCODE` 0 |
+| `windows-validate.ps1 -Checkout C:\Work\antigravity-container -Install -StopMachine`, Windows PowerShell 5.1 | 55 passed, 0 failed, 1 skipped (restricted mode without a prepared installation, because setup saved provider). Installer, user `PATH`, uninstall, stopped machine, a distribution started by WSL alone, the restart with Podman, "Offline qualification", "Offline session", "Redirected input" and "One engine for sessions and the machine" passed |
+| The same without `-Install -StopMachine`, PowerShell 7.7.0 | 43 passed, 0 failed, 3 skipped |
+| `gemini` method with a dummy key | Setup said `Set $env:GEMINI_API_KEY = '...' in PowerShell before antigravity-container.ps1`. The provider session used `gemini-api`; `--container-shell -c 'echo "$GEMINI_API_KEY"'` printed the value. `antigravity-container.ps1 -p 'Say hello' --print-timeout 60s --settings '{"modelProvider":"gemini"}'` reached `generativelanguage.googleapis.com`, which answered `API_KEY_INVALID` (HTTP 400): the JSON argument crossed PowerShell intact, and the proxy and the CA trust worked. A real-key model request is unavailable. Setup then returned to the `account` method |
+
+Notes:
+
+- **Denied hosts in provider sessions.** With `google-account`, `agy` fetches
+  the account picture from `lh3.googleusercontent.com`; with `gemini-api` it
+  tries `play.googleapis.com`. The proxy refuses both (`policy-denied`), as the
+  profiles require. The sessions are unaffected.
+- **The `transport-closed` diagnostic.** At session end, the
+  `recent protected egress diagnostics` line with `transport-closed` is the
+  behavior already recorded on Linux.
+- **A leftover qualification probe.** `podman ps -a` in the machine listed a
+  container in the `Created` state, `nice_perlman`, from image
+  `localhost/antigravity-cli:setup-1d2b933d03744fb88d0bee2f6a0d732c`, running
+  `python3 -I -c` with the setup's security probe (`ipv6_state`). It comes
+  from an earlier Antigravity setup in the machine, whose candidate tag
+  remained, and it was there before the sessions of this run. It is not a
+  session container; `podman rm` removes it.
+- **A shared setup prompt prints its fallback text letter by letter.** The
+  state-mode prompt reads `shared n, o,  , o, t, h, e, r configuration`, as
+  recorded for Codex. It is cosmetic and is left to a reference fix.
+- **The machine keeps the method of the last setup.** The operator reruns
+  setup to return to the `account` method.
+
+The installed launcher core, setup and guard change, so installations rerun
+`--container-setup`.

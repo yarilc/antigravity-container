@@ -9,10 +9,14 @@ import select
 import shutil
 import shlex
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
 import uuid
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'network'))
+import agent_budgets  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = ROOT / 'antigravity-container.sh'
@@ -99,8 +103,9 @@ class RuntimeTests(unittest.TestCase):
     def test_build_context_allows_only_required_inputs(self):
         context = self.base / 'build-context'
         (context / 'network').mkdir(parents=True)
+        # copy2 keeps the entrypoint's executable bit, which the image relies on.
         for name in ('.containerignore', 'container-entrypoint.sh', 'network/relay.py', 'network/mux.py'):
-            shutil.copyfile(ROOT / name, context / name)
+            shutil.copy2(ROOT / name, context / name)
         for name in ('unknown-file', '.env', '.gemini/settings.json', '.local/share/keyrings/token',
                      '.git/config', 'custom-private-state/credentials', '.test-state/token',
                      'keyring-session.sh', 'network/guard.c', 'network/bin/sandbox-egress-guard',
@@ -401,20 +406,47 @@ exec /usr/local/bin/antigravity-entrypoint -p probe --settings '{"modelProvider"
         self.assertIn('GEMINI_API_KEY', result.stdout + result.stderr)
 
 
+    def engine_budgets(self):
+        """Delegated controllers and process mechanism of the engine, by the launcher's rule."""
+        def info(template):
+            return subprocess.run(['podman', 'info', '--format', template], env=self.env, check=True,
+                                  capture_output=True, text=True, timeout=60).stdout.strip()
+        delegated = agent_budgets.delegated(info('{{.Host.CgroupControllers}}'), info('{{.Host.CgroupManager}}'))
+        return delegated, agent_budgets.process_mechanism(delegated, info('{{.Host.Kernel}}'))
+
     # Session hardening baseline (B01-B05), ported from claude-container and codex-container.
     def test_effective_hardening_and_budgets(self):
+        # Budgets apply as the engine allows: cgroup limits only for delegated
+        # controllers, the process rlimit as fallback, and a notice otherwise.
+        delegated, mechanism = self.engine_budgets()
         script = """python3 - "$@" <<'CHECK'
 import pathlib, sys
 memory, nano, pids = map(int, sys.argv[1:4])
+delegated, mechanism = sys.argv[4].split(','), sys.argv[5]
 status = dict(line.split(':', 1) for line in pathlib.Path('/proc/self/status').read_text().splitlines())
 assert all(int(status[k], 16) == 0 for k in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')), status
 assert int(status['NoNewPrivs']) == 1
 root = pathlib.Path('/sys/fs/cgroup')
 assert pathlib.Path('/proc/self/cgroup').read_text() == '0::/\\n'
-assert int((root / 'memory.max').read_text()) == memory
-assert int((root / 'pids.max').read_text()) == pids
-quota, period = (root / 'cpu.max').read_text().split()
-assert int(quota) * 10**9 == nano * int(period)
+def limit(name):
+    path = root / name
+    return path.read_text().split() if path.exists() else ['max']
+if 'memory' in delegated:
+    assert int(limit('memory.max')[0]) == memory
+else:
+    assert limit('memory.max') == ['max'], limit('memory.max')
+quota, *period = limit('cpu.max')
+if 'cpu' in delegated:
+    assert int(quota) * 10**9 == nano * int(period[0])
+else:
+    assert quota == 'max', quota
+if mechanism == 'cgroup':
+    assert int(limit('pids.max')[0]) == pids
+else:
+    assert limit('pids.max') == ['max'], limit('pids.max')
+if mechanism == 'rlimit':
+    line = next(l for l in pathlib.Path('/proc/self/limits').read_text().splitlines() if l.startswith('Max processes'))
+    assert line.split()[2:4] == [str(pids), str(pids)], line
 print('EFFECTIVE_HARDENING_OK')
 CHECK
 git --version >/dev/null && openspec --version >/dev/null && agy --version >/dev/null
@@ -425,16 +457,30 @@ git --version >/dev/null && openspec --version >/dev/null && agy --version >/dev
         for env, expected in cases:
             for service in ('0', '1'):
                 with self.subTest(env=env, service=service):
-                    arguments = 'set -- ' + ' '.join(map(str, expected)) + '\n'
+                    arguments = 'set -- ' + ' '.join(map(shlex.quote, [*map(str, expected),
+                                                     ','.join(delegated) or 'none', mechanism])) + '\n'
                     result = self.shell(arguments + script, ANTIGRAVITY_CONTAINER_PODMAN=service, **env)
                     self.assert_success(result)
                     self.assertIn('EFFECTIVE_HARDENING_OK', result.stdout)
-        # A process budget is enforced, not just reported.
+                    for budget, controller in (('memory', 'memory'), ('CPU', 'cpu')):
+                        notice = f'agent {budget} budget not enforced'
+                        if controller in delegated:
+                            self.assertNotIn(notice, result.stderr)
+                        else:
+                            self.assertIn(notice, result.stderr)
+                    rlimit = f'agent process budget enforced through the process rlimit ({expected[2]} tasks'
+                    self.assertEqual(rlimit in result.stderr, mechanism == 'rlimit', result.stderr)
+                    self.assertEqual('agent process budget not enforced' in result.stderr,
+                                     mechanism == 'none', result.stderr)
+        if mechanism == 'none':
+            return
+        # A process budget is enforced, not just reported. Under the rlimit
+        # fallback, container startup also counts, so the budget leaves room.
         result = self.shell('python3 - <<\'CHECK\'\nimport subprocess\nchildren = []\ntry:\n'
-                            '    for _ in range(80):\n        children.append(subprocess.Popen(["sleep", "30"]))\n'
+                            '    for _ in range(200):\n        children.append(subprocess.Popen(["sleep", "30"]))\n'
                             'except (BlockingIOError, OSError):\n    print("PIDS_BUDGET_ENFORCED")\n'
                             'finally:\n    [child.kill() for child in children]\nCHECK\n',
-                            ANTIGRAVITY_CONTAINER_PIDS_LIMIT='32')
+                            ANTIGRAVITY_CONTAINER_PIDS_LIMIT='128')
         self.assert_success(result)
         self.assertIn('PIDS_BUDGET_ENFORCED', result.stdout)
 

@@ -2,6 +2,9 @@
 # mirrors agent/profile.json and agent/policies/default.json;
 # tests/test_alignment.py compares them. See docs/launcher-contract.md in
 # sandbox-container.
+# The core sources this file: it reads the AGENT_* data and hook outputs and
+# defines the core state the hooks read.
+# shellcheck shell=bash disable=SC2034,SC2154
 AGENT_NAME=antigravity-container
 AGENT_DISPLAY_NAME=Antigravity
 AGENT_WRAPPER=antigravity-container.sh

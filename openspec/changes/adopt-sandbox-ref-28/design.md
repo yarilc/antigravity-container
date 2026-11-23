@@ -48,6 +48,11 @@ No other tracked script has a finding.
   cgroup limits for all three budgets. It also starts 80 children under a
   process budget of 32. Codex changed this test the same way as Claude.
 - No other Antigravity test reads the engine's controllers or cgroup manager.
+- `test_build_context_allows_only_required_inputs` copies
+  `container-entrypoint.sh` into its build context with `shutil.copyfile`,
+  which drops the executable bit, then requires `test -x` in the image. It
+  passed on 2026-11-18 on another host. On this runner it fails on `main` too,
+  with the old and the rebuilt image, so the tag does not cause it.
 
 **Antigravity specifics on Windows.** The shim reads every wrapper-specific
 value from `agent/profile.json`:
@@ -80,7 +85,8 @@ under `setup-*` tags.
 **Goals:**
 
 - Antigravity runs on the `sandbox-ref-28` shared files. Beyond the ShellCheck
-  header and the two adapted tests, no Antigravity-specific code changes.
+  header, the two adapted tests and the build-context test fix, no
+  Antigravity-specific code changes.
 - Antigravity works from Windows on a Podman machine, in provider mode, with
   the Google sign-in, token reuse and the installer.
 - The parity tables of the reference and the five wrappers state the same rows.
@@ -127,6 +133,10 @@ under `setup-*` tags.
        names and the `agy --version` check kept;
      - the process-budget probe uses a budget of 128 and 200 children, and is
        skipped when no mechanism applies.
+   - `test_build_context_allows_only_required_inputs` copies its inputs with
+     `shutil.copy2`, which keeps the entrypoint's mode. The operator chose to
+     fix this pre-existing test defect here, so the default suite passes on
+     this runner.
    - Any other failure caused by a shared behavior change is fixed in
      Antigravity's test on the same branch. A failure in shared code pauses
      the change for a reference fix and a new tag.
