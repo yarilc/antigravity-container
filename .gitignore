@@ -4,3 +4,4 @@ __pycache__/
 .agents
 todo.md
 network/bin/
+.claude
