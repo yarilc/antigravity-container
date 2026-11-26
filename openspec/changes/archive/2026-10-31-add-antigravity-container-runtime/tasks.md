@@ -33,7 +33,7 @@
 
 ## 5. Integrated acceptance
 
-- [ ] 5.1 Run wrapper and runtime checks on Linux rootless Podman, including amd64 and arm64 builds/execution on suitable runners; record versions, commands, results, and platforms actually verified without marking unavailable tests as passed.
+- [x] 5.1 Run wrapper and runtime checks on Linux rootless Podman, including amd64 and arm64 builds/execution on suitable runners; record versions, commands, results, and platforms actually verified without marking unavailable tests as passed.
 - [x] 5.2 Run the complete flow from empty state with account login, a project task, restart, logout, and worktrees; verify mount boundaries and absence of dependencies on the host browser, keyring, or bus.
 - [x] 5.3 Run a headless prompt with the API provider and one with YOLO, verifying that YOLO does not add the socket; test `--sandbox` separately and report namespace availability and kernel limitations without expanding privileges.
 - [x] 5.4 Review README, help, and inventory against the final image and the five specifications; verify matching names/defaults, explicit updates, documented limitations, and absence of claims for tests not performed.
