@@ -1,16 +1,18 @@
 # Interactive sandbox setup
 
 The durable contract is [container-setup](../openspec/specs/container-setup/spec.md).
-It is copied unchanged from `sandbox-container` at tag `sandbox-ref-28`
+It is copied unchanged from `sandbox-container` at tag `sandbox-ref-36`
 (`setup/`); Antigravity values come from `agent/profile.json`. The archived change
 `openspec/changes/archive/<date>-add-container-setup/` retains the design, tasks
 and delta specifications.
 
-The toolchain library (`adopt-sandbox-ref-17`) changes the wrapper and adds
-`setup/toolchains.py` to the installed and qualified code, so rerun
-`--container-setup` after upgrading. Setup does not manage toolchains: the
-operator adds them with `--container-toolchain`, and every session mounts the
-library read-only at `/toolchains` (see the README "Toolchains" section).
+Rerun `--container-setup` after upgrading to prepare the session engine,
+refresh qualification and migrate the saved preferences. The operator
+manages file and image toolchains on the host with `--container-toolchain`.
+Setup installs the reviewed catalog and re-verifies installed toolchains
+whose recorded base differs from the prepared runtime image. A failed
+recheck is reported and leaves that toolchain's default environment disabled.
+See [Toolchains](../README.md#toolchains).
 
 Setup is the mandatory first step for new users. Run
 `bash ./antigravity-container.sh --container-setup` from a reviewed checkout,
@@ -23,12 +25,12 @@ available through `--container-help` without loading preferences or using Podman
 ## Choices and preparation
 
 The prompts cover network access, the authentication method for online use,
-shared/fresh isolated state, delegation, permission bypass, worktree scope, host
+shared or fresh isolated state, permission bypass, worktree scope, host
 CA trust, installation/command paths and the Podman endpoint. The method
 `account` selects the protected `google-account` profile and `gemini` selects
 `gemini-api`, from the packaged policy. Setup never asks for a key, password or
 token. First-run setup defaults to provider mode with the `account` method,
-shared state, permission bypass off, current workspace only, delegation off and
+shared state, permission bypass off, current workspace only and
 CA trust off.
 
 The state question follows the reference. `shared` (the first-run default)
@@ -52,7 +54,7 @@ automatically. An explicit empty network override on a managed invocation also
 selects `provider`, never the saved mode; remove the override to use the saved
 choice. Offline mode cannot reach any model provider.
 
-Offline networking, provider networking and delegation need a same-host Unix
+Offline and provider networking need a same-host Unix
 Podman service. Before the network question, setup checks, without changing
 anything, whether a service answers at `CONTAINER_HOST`, at the saved endpoint
 or at the default endpoint. It also checks whether a usable systemd user manager
@@ -67,7 +69,7 @@ succeeds, setup offers only unrestricted networking:
 - it explains why, and asks `Continue with unrestricted networking?`, which
   defaults to no;
 - it saves the local engine as the launch endpoint;
-- it skips the delegation and endpoint questions.
+- it skips the endpoint question.
 
 A saved offline or provider mode is never changed silently: setup states that
 it cannot be kept and asks for the same confirmation. Declining ends setup
@@ -83,14 +85,17 @@ After the worktree question, setup asks for the agent budgets and lifetime:
 `Agent process limit` (default `512`) and `Session lifetime in seconds, 0
 disables` (default `0`). Invalid answers are explained and asked again; `0`,
 `-1`, `max` and unitless memory are rejected, so a budget cannot be disabled.
-The setup plan lists the values. They are saved in schema 2 preferences and
+The setup plan lists the values. They are saved in schema 3 preferences and
 supplied by the managed launcher as `ANTIGRAVITY_CONTAINER_MEMORY_LIMIT`,
 `ANTIGRAVITY_CONTAINER_CPU_LIMIT`, `ANTIGRAVITY_CONTAINER_PIDS_LIMIT` and
 `ANTIGRAVITY_CONTAINER_RUN_TIMEOUT` unless those are exported. Smoke and
 qualification use the saved values. To change a budget, rerun setup; an
 exported different value makes restricted launches stop until
 `--container-qualify` is run with the same environment. Preferences saved by an
-earlier release (schema 1) are read with the default budgets proposed.
+earlier release without budgets are read with the default budgets proposed.
+Setup accepts schema 1 and 2 preferences and removes saved host Podman
+delegation and its socket override on rerun. A managed launch with active
+saved delegation asks for setup before any engine query.
 
 Setup smoke, qualification and optional login run in a private temporary
 workspace, never in the directory from which setup was started. Ordinary
@@ -137,8 +142,8 @@ Destination binding cannot tell your credentials from attacker-supplied ones,
 so a prompt-injected agent can send workspace data to an allowed host with a
 foreign Gemini API key or Google account. Answering `no` returns to the
 network-mode question; no other mode is chosen for you. The acknowledgement is
-required on every setup run that selects provider mode, including the
-delegation-conflict network change, and is not saved. Only offline mode removes
+required on every setup run that selects provider mode and is kept in
+memory for the current run. Only offline mode removes
 this channel; see
 [Residual exfiltration](network-contract.md#residual-exfiltration-to-allowed-services).
 
@@ -221,19 +226,19 @@ unavailable required controls block launch; permissions are not repaired.
 Setup distinguishes `locally-qualified` from an exact `release-measured` record.
 Local success is not a claim about every native distribution, LSM or auth flow.
 
-For restricted launch or optional delegation, setup verifies the selected
+For restricted launch, setup verifies the selected
 same-host rootless Unix service. `default` derives the socket from the current
 `XDG_RUNTIME_DIR` (or `/run/user/<uid>`) on every invocation; an explicit
 `unix:///absolute/socket` is retained literally. `local` is available for
-unrestricted launch without delegation. When a restricted mode is chosen and
+unrestricted launch. When a restricted mode is chosen and
 the saved endpoint is `local`, setup proposes `default` instead. TCP/SSH, named
 contexts and implicitly
 remote engines remain unsupported. Bind/build paths must exist at their real
 absolute paths on that same Linux host, including when running from a container.
 
 When available, setup can run `systemctl --user enable --now podman.socket`
-after separate confirmation. This persistent user-service change does not
-delegate the socket to the application. Without a working user manager, setup
+after separate confirmation. The socket is used for host-side launch
+operations. Without a working user manager, setup
 prints foreground `podman system service --time=0` instructions and stays
 incomplete until an endpoint is verified. It does not leave a background daemon
 or repair an administrator-owned `/run` directory. A service enabled before
@@ -261,6 +266,17 @@ uses that immutable image without networking. Failed recipe/package acquisition
 does not change pins automatically; resolve the reported maintenance stage and
 rerun. Unrestricted mode skips the guard/toolchain/proxy, and offline skips the
 provider proxy/authentication.
+
+Setup also prepares the private session engine image in every mode and
+records its immutable ID. It builds from the digest-pinned base in
+`launcher/engine/Containerfile` and reuses a matching prepared image.
+It derives the engine's seccomp profile from the host's default profile.
+The selected engine image and its seccomp profile are bound into restricted
+qualification when the session uses the engine. Register library images with
+`--container-toolchain add`. New sessions receive the private engine when
+their enabled library contains images. See
+[Container tests](../README.md#container-tests) for the workspace and
+image-store boundaries and systemd prerequisites.
 
 ## Managed installation and launch
 
@@ -361,8 +377,8 @@ atomically replace `current` with a symlink to that release. Alternatively run
 the prior manual wrapper with its explicit environment. Never delete state to
 roll back. Automatic pruning is not provided. A setup that does not activate
 its candidate, because it failed, was cancelled or was interrupted, removes the
-`setup-<release>` tags it created for that candidate (runtime, toolchain,
-proxy). It keeps every other name of those images, and reports an image left
+`setup-<release>` tags it created for that candidate (runtime, guard toolchain,
+proxy and session engine). It keeps every other name of those images, and reports an image left
 without a name with `podman image rm <id>`. Enabled user sockets and other
 persistent effects remain and are reported; setup does not remove shared
 engine resources or undo service enablement automatically.
@@ -483,6 +499,13 @@ setup installed it elsewhere, set `ANTIGRAVITY_CONTAINER_WSL_INSTALLATION` to th
 absolute path. When the machine is recreated, the installation is gone, and a
 launch asks to rerun setup.
 
+On Windows, the operator's toolchain library stays in the machine. Use
+`--container-toolchain add` from PowerShell with a catalog name or a
+drive-letter recipe path. A local archive path in the recipe can also use a
+Windows drive letter. Setup leaves managed state and credentials unchanged
+when it migrates the obsolete delegation setting. See
+[Toolchains on Windows](../README.md#toolchains-on-windows).
+
 ## Readiness and authentication
 
 Setup smoke-checks the actual installed wrapper with the selected state, network
@@ -555,7 +578,8 @@ The `container-setup` requirement coverage is:
 | Dedicated interactive setup invocation | PTY early-dispatch, mixed-argument/pipeline rejection and help precedence tests |
 | Workflow questionnaire with explicit defaults | Default/retry/conflict PTY checks; saved-choice rerun; real provider/offline/unrestricted paths |
 | Setup without a launch service offers only unrestricted networking | Probe order and user-manager unit tests; confirmed, declined and saved-offline questionnaires; real-wrapper PTY run with a failing `systemctl` |
-| Optional authority requires deliberate selection | Delegation conflict questionnaire; separate service confirmation; saved worktree/TTY checks |
+| Optional authority requires deliberate selection | Questionnaire, separate service confirmation and saved worktree and TTY checks |
+| Saved delegation preferences are migrated | Old schema migration and managed-launch refusal tests |
 | Installed host prerequisites only | Missing command, unsupported context/platform and strict failed/malformed engine-response tests |
 | User-scoped Podman service preparation | Synthetic accepted/declined/unavailable systemd and exact-endpoint tests; real existing-service reuse |
 | Reviewed setup mutations and maintenance | Declined plan has no filesystem/image mutation; scoped maintenance/environment tests |

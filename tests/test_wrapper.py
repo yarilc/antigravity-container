@@ -11,7 +11,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
@@ -51,11 +50,6 @@ class WrapperTests(unittest.TestCase):
         self.env = {'PATH': str(self.bin) + ':' + os.environ['PATH'], 'HOME': str(self.home),
                     'ANTIGRAVITY_CONTAINER_NETWORK': 'unrestricted', 'ANTIGRAVITY_CONTAINER_MAINTENANCE': '1',
                     'FAKE_LABEL_HASH': LABEL_HASH, 'FAKE_LOG': str(self.log)}
-        self.socket = socket.socket(socket.AF_UNIX)
-        self.socket_path = self.base / 'podman.sock'
-        self.socket.bind(str(self.socket_path))
-        self.addCleanup(self.socket.close)
-        self.env['ANTIGRAVITY_CONTAINER_PODMAN_SOCKET'] = str(self.socket_path)
 
     def run_wrapper(self, *args, wrapper=WRAPPER, **env):
         self.log.unlink(missing_ok=True)
@@ -99,20 +93,24 @@ class WrapperTests(unittest.TestCase):
                      'www.gstatic.com, play.googleapis.com'):
             self.assertIn(text, result.stdout)
         self.assertLess(result.stdout.index('ANTIGRAVITY_CONTAINER_NETWORK'), result.stdout.index('ANTIGRAVITY_YOLO'))
+        self.assertIn('Host Podman delegation was removed: ANTIGRAVITY_CONTAINER_PODMAN=1 stops startup.',
+                      result.stdout)
         self.assertFalse(self.log.exists())
 
-    def test_four_independent_permission_combinations(self):
-        for isolated, yolo, service in itertools.product((False, True), ('0', '1'), ('0', '1')):
-            with self.subTest(isolated=isolated, yolo=yolo, service=service):
-                result = self.run_wrapper('-p', 'test', ANTIGRAVITY_YOLO=yolo, ANTIGRAVITY_CONTAINER_PODMAN=service,
+    def test_approval_bypass_keeps_session_hardening(self):
+        for isolated, yolo in itertools.product((False, True), ('0', '1')):
+            with self.subTest(isolated=isolated, yolo=yolo):
+                result = self.run_wrapper('-p', 'test', ANTIGRAVITY_YOLO=yolo,
                                           ANTIGRAVITY_CONTAINER_STATE_DIR=str(self.state) if isolated else '')
                 self.assertEqual(result.returncode, 0, result.stderr)
                 create = self.agent_create()
                 self.assertEqual(BYPASS in create, yolo == '1')
-                self.assertEqual('CONTAINER_HOST=unix:///run/podman/podman.sock' in create, service == '1')
+                self.assertFalse(any('podman.sock' in argument for argument in create))
                 self.assertEqual(create[-2:], ['-p', 'test'])
+                self.assertIn('--cap-drop=all', create)
+                self.assertEqual([arg for arg in create if arg.startswith('--security-opt')],
+                                 ['--security-opt=no-new-privileges'])
                 self.assertNotIn('--privileged', create)
-                self.assertFalse(any('label=disable' in a for a in create))
 
     def test_yolo_values_and_shell_mode(self):
         for shell, value in itertools.product((False, True), TRUE + FALSE):
@@ -125,6 +123,9 @@ class WrapperTests(unittest.TestCase):
                     expected.insert(0, BYPASS)
                 self.assertEqual(self.command(self.agent_create())[-len(expected):], expected)
                 self.assertEqual(BYPASS in self.agent_create(), not shell and value in TRUE)
+        result = self.run_wrapper(BYPASS, '-p', 'prompt', ANTIGRAVITY_YOLO='false')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.command(self.agent_create()), [BYPASS, '-p', 'prompt'])
         for value in ('maybe', ' true '):
             with self.subTest(invalid=value):
                 result = self.run_wrapper(ANTIGRAVITY_YOLO=value)
@@ -179,7 +180,7 @@ class RestrictedTests(WrapperTests):
         shutil.copyfile(ROOT / 'agent/policies/default.json', self.policy)
         self.runtime = self.base / 'runtime'
         self.runtime.mkdir(mode=0o700)
-        self.restricted = {'ANTIGRAVITY_CONTAINER_PODMAN': '', 'GEMINI_API_KEY': 'host-key', 'FAKE_NETWORK': '1',
+        self.restricted = {'GEMINI_API_KEY': 'host-key', 'FAKE_NETWORK': '1',
                            'FAKE_INFO': 'true linux true', 'CONTAINER_HOST': 'unix:///run/service.sock'}
 
     def run_offline(self, *args, **env):
@@ -253,8 +254,6 @@ class RestrictedTests(WrapperTests):
                 self.assertNotIn(BYPASS, create)
 
     def test_qualification_probe_receives_no_agent_arguments(self):
-        control = self.wrapper.parent / 'network/control.py'
-        control.write_text(control.read_text() + "if args[0]=='qualification-input': print('f'*32+' 0')\n")
         result = self.run_offline('--container-qualify-probe', ANTIGRAVITY_YOLO='1')
         self.assertEqual(result.returncode, 0, result.stderr)
         create = self.agent_create()
@@ -265,7 +264,7 @@ class RestrictedTests(WrapperTests):
 
     # The unrestricted cases of the parent class run once, there.
     test_help_documents_the_agent_variables_and_the_provider_hosts = None
-    test_four_independent_permission_combinations = None
+    test_approval_bypass_keeps_session_hardening = None
     test_yolo_values_and_shell_mode = None
     test_unrestricted_sessions_use_the_image_entrypoint = None
     test_fixed_settings_win_over_toolchain_and_forwarded_variables = None

@@ -44,15 +44,23 @@ The agent part SHALL make the core run `/usr/local/bin/antigravity-entrypoint` a
 - **AND** the forwarding list skips both names with a notice
 
 ### Requirement: Antigravity launcher tests cover only Antigravity's part
+
 Antigravity's launcher behavior SHALL be tested by the shared `tests/test_launcher.py` and `tests/fake_podman.py`, copied unchanged from the reference tag. `tests/test_wrapper.py` SHALL test only Antigravity's hooks, agent data, credential rules per policy profile and shipped policy inventories. An Antigravity launcher case that the shared tests do not cover SHALL be added to the reference first, not kept as a wrapper copy.
 
 #### Scenario: Wrapper runtime tests
+
 - **WHEN** `bash tests/run-runtime.sh --wrapper` runs
 - **THEN** it runs both `tests/test_launcher.py` and `tests/test_wrapper.py` against this checkout
 
 #### Scenario: Approval bypass combinations
-- **WHEN** `tests/test_wrapper.py` runs every combination of `ANTIGRAVITY_YOLO` and `ANTIGRAVITY_CONTAINER_PODMAN=1` in unrestricted shared and isolated modes
-- **THEN** only `ANTIGRAVITY_YOLO` determines the bypass flag, and only the Podman opt-in determines the delegation mounts and variables
+
+- **WHEN** tests/test_wrapper.py exercises enabled and disabled ANTIGRAVITY_YOLO in shared and isolated sessions
+- **THEN** the agy bypass arguments follow ANTIGRAVITY_YOLO and the existing mount and hardening assertions continue to hold
+
+#### Scenario: Retired host-service opt-in
+
+- **WHEN** the shared launcher fixture checks the old Podman opt-in across network modes
+- **THEN** the shared suite covers the early refusal and its migration diagnostic
 
 ### Requirement: Launcher files pass ShellCheck
 `launcher/core.sh`, `launcher/windows/bootstrap.sh`, the launcher fixtures and every `agent/launcher.sh` SHALL each pass ShellCheck alone, at warning level. Each SHALL declare its shell with a `shell=bash` directive. A suppressed finding SHALL concern only data and state the core shares with the agent part, or an indirectly assigned variable, and SHALL carry a comment naming the reason. The reference SHALL provide a check with a pinned ShellCheck version that runs on any checkout.

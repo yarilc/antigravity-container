@@ -15,7 +15,8 @@ selection_env=(--env ANTIGRAVITY_RUNTIME_TESTS=1 --env SANDBOX_RUNTIME_TESTS=1)
 guard_environment=()
 project_mode=ro
 shared=(test_reference_copy test_alignment test_launcher test_agent_profile test_network_policy test_mux test_tls_client_hello
-    test_tls_proxy test_platform test_qualification test_guard test_session test_network_feasibility test_image_pins)
+    test_tls_proxy test_platform test_qualification test_guard test_session test_network_feasibility
+    test_engine test_toolchains test_windows_bootstrap test_windows_enter test_image_pins)
 case "${1:-}" in
     # The shared launcher tests and this wrapper's own: test_launcher.py, test_wrapper.py.
     --wrapper) pattern='test_[lw][ar][au]*.py' ;;
@@ -46,8 +47,11 @@ else
     selection=(-v "${shared[@]/#/tests.}")
     selection_env=()
 fi
-socket=${ANTIGRAVITY_CONTAINER_PODMAN_SOCKET:-}
-if [[ -z "$socket" && "${CONTAINER_HOST:-}" == unix:///?* ]]; then socket=${CONTAINER_HOST#unix://}; fi
+# The runner uses the host-side launch service for its test commands.
+socket=''
+if [[ "${CONTAINER_HOST:-}" == unix:///?* ]]; then
+    socket=${CONTAINER_HOST#unix://}
+fi
 socket=${socket:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock}
 response=$(podman --remote --url "unix://$socket" info --format '{{.Host.Security.Rootless}}{{"\n"}}{{.Host.RemoteSocket.Path}}')
 [[ "$response" == true$'\n'/* && "$response" != *$'\r'* ]] || { printf 'An accessible rootless Unix service with an absolute host socket path is required\n' >&2; exit 1; }
