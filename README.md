@@ -7,8 +7,8 @@ container. The wrapper follows the workflow of
 
 The default session exposes the current project and the host's `~/.gemini`
 below an ephemeral home. A launch runs in one network mode: `provider` (the
-default; an exact-destination egress proxy), `offline` or `unrestricted`. YOLO and access to the host
-Podman service are independent opt-ins.
+default, with an exact-destination egress proxy), `offline` or `unrestricted`.
+Sessions use a private container engine when the toolchain library holds images.
 
 ## Requirements
 
@@ -47,15 +47,12 @@ podman run --rm docker.io/library/alpine:latest id
 The first command must print `true`; the second must successfully start a
 container. Root inside that container is normal for rootless Podman.
 
-The host API socket is required only when you enable delegation with
-`ANTIGRAVITY_CONTAINER_PODMAN=1`. With delegation disabled, local rootless
-Podman is sufficient: skip the socket setup and proceed to [First run](#first-run).
-
-For delegation, the default socket is
-`${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock`. You can select another
-socket with `ANTIGRAVITY_CONTAINER_PODMAN_SOCKET`; an existing local Unix
-`CONTAINER_HOST` is used by default when no explicit socket override is set.
-Choose **one** of the following methods to start the host service.
+Offline and provider launches need a same-host rootless Unix service. Guided
+setup verifies or prepares it. A local rootless engine is sufficient for
+unrestricted launches. The default launch socket is
+`${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock`. An explicit same-host
+Unix `CONTAINER_HOST` selects another endpoint. Choose a method below if
+setup needs a launch service.
 
 ### With a systemd user session
 
@@ -115,19 +112,18 @@ Repeat this setup after reboot because `/run` is temporary. Export the same
 session does not set it automatically. Run the service and wrapper without
 `sudo` so they use your rootless containers and configuration.
 
-### Verify the socket before enabling delegation
+### Verify the launch service
 
 For either method, run these commands as the same user in the terminal where
 you will launch the wrapper:
 
 ```bash
-podman_socket="${ANTIGRAVITY_CONTAINER_PODMAN_SOCKET:-${CONTAINER_HOST#unix://}}"
+podman_socket="${CONTAINER_HOST#unix://}"
 podman_socket="${podman_socket:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock}"
 test -S "$podman_socket" && echo "Socket exists"
 podman --remote --url "unix://$podman_socket" info
 ```
 
-Enable delegation only if the socket exists and the API command succeeds.
 A socket file alone does not prove that a service is listening. If the API
 command fails, check the systemd status or the foreground service output above.
 See also the official
@@ -145,8 +141,7 @@ before contacting Podman. A valid example is
 `CONTAINER_HOST=unix:///run/user/1000/podman/podman.sock`. Named remote
 connections, TCP/SSH transports, and implicit remote contexts are unsupported.
 A local engine or an explicit same-host Unix service is supported, including
-when this wrapper runs inside another container. Launch-engine selection is
-independent of any optional delegation socket override.
+when this wrapper runs inside another container. The launch service stays on the host.
 
 ## First run
 
@@ -228,12 +223,12 @@ or in provider mode another profile's credential) are skipped with a notice.
 
 ## Network modes
 
-| Mode | Agent access | Host Podman delegation |
-| --- | --- | --- |
-| unset or empty | `provider`; without setup's saved provider settings the launch stops with setup guidance | Rejected |
-| `offline` | Own loopback, pipes and connected socket pairs only | Rejected |
-| `provider` | As offline, plus one channel to an exact-destination proxy | Rejected |
-| `unrestricted` (explicit only) | Ordinary networking | Exact opt-in allowed |
+| Mode | Agent access |
+| --- | --- |
+| unset or empty | `provider`; without setup's saved provider settings the launch stops with setup guidance |
+| `offline` | Own loopback, pipes and connected socket pairs only |
+| `provider` | As offline, plus one channel to an exact-destination proxy |
+| `unrestricted` (explicit only) | Ordinary networking |
 
 Restricted modes run a native guard (Landlock plus seccomp) as the first
 process, deny new Unix sockets and every direct route, and never fall back to
@@ -285,14 +280,13 @@ inventory is empty, so installations report `locally-qualified`. The full
 contract is in [docs/network-contract.md](docs/network-contract.md), and the
 shared mechanism in [network/README.md](network/README.md).
 
-### Keyring and delegation notes
+### Keyring migration
 
 - The private D-Bus session and GNOME keyring were removed: `agy` now keeps
   account tokens in files. Accounts signed in through the keyring sign in again
   once. The old keyring files stay in the state home
   (`.local/share/keyrings/`); delete them after the new sign-in if you no
   longer need them.
-- `ANTIGRAVITY_CONTAINER_PODMAN=1` works only with `unrestricted`.
 
 ## Authentication
 
@@ -370,30 +364,15 @@ are outside this version's scope.
 
 ## Permissions
 
-| `ANTIGRAVITY_YOLO` | `ANTIGRAVITY_CONTAINER_PODMAN` | Behavior |
-| --- | --- | --- |
-| disabled | disabled | Native CLI approvals; no host Podman socket |
-| enabled | disabled | Approval bypass; no host Podman socket |
-| disabled | enabled | Native CLI approvals; host Podman access |
-| enabled | enabled | Approval bypass and host Podman access |
+`ANTIGRAVITY_YOLO` accepts `1`, `true` or `yes`, and `0`, `false` or `no`,
+ignoring case. An unset or empty value leaves native approvals enabled.
+Unsupported values stop before image operations. Shell mode validates the
+setting and starts Bash without agy arguments.
 
 ```bash
-agy
-ANTIGRAVITY_YOLO=1 agy
-ANTIGRAVITY_CONTAINER_PODMAN=1 agy
-ANTIGRAVITY_YOLO=1 ANTIGRAVITY_CONTAINER_PODMAN=1 agy
+agy -p 'Check the project'
+ANTIGRAVITY_YOLO=1 agy -p 'Check the project'
 ```
-
-`ANTIGRAVITY_YOLO` accepts `1`, `true`, or `yes`, and `0`, `false`, or `no`,
-ignoring case. Empty/unset means disabled; other YOLO values fail before build
-or launch. `ANTIGRAVITY_CONTAINER_PODMAN` enables delegation only for the exact
-string `1`. Every other value (including `true`, `yes`, `01`, and `maybe`)
-disables delegation without error, in CLI and shell modes.
-
-Use exactly `ANTIGRAVITY_CONTAINER_PODMAN=1` for host service access.
-When disabled, delegation socket overrides are ignored and `CONTAINER_HOST` is
-explicitly removed from the container environment, including image or engine
-defaults. The wrapper retains its own launch-engine connection.
 
 YOLO adds Google's `--dangerously-skip-permissions` without modifying saved
 settings. Disabling this variable does not override permission flags supplied
@@ -435,24 +414,80 @@ This finding applies to the tested versions and environment. Recheck internal
 sandbox compatibility after relevant CLI or engine updates; see the evidence
 and accepted limitation in [docs/validation.md](docs/validation.md).
 
-**The Podman socket grants control over containers, volumes, and host bind
-mounts available to the service user. With the socket enabled, the agent can
-access host paths beyond this project's mount.** This delegation cannot enforce
-project-only filesystem access. The wrapper never starts a nested daemon,
-uses `--privileged`, or automatically disables seccomp or SELinux.
+### Container tests
 
-Enable and verify the host rootless service using the
-[host setup instructions](#enable-rootless-podman-on-the-host) only when you
-want this delegation. With socket access disabled, no service socket is required.
-If SELinux blocks the socket or project bind, the wrapper reports the engine
-error. Configure an appropriate host policy; it does not automatically relabel
-the project or disable labels. SELinux enforcing support requires separate
-validation.
+When the toolchain library contains an image, a session gets a private
+rootless Podman engine at `tcp://127.0.0.1:2375` through `CONTAINER_HOST` and
+`DOCKER_HOST`. The engine mounts the workspace at its original absolute
+path and the library image store read-only. Nested containers have their own
+process and hostname views. The engine and its writable storage are removed
+when the session ends. The host launch socket and credential stores stay on
+the host.
+
+```bash
+agy --container-toolchain add ~/recipes/alpine.json
+agy --container-shell -c 'podman run --rm --network=none localhost/library-alpine:1 true'
+```
+
+See [Images](#images) for the example recipe. A new image becomes available
+to a running engine. Adding the first image takes effect with the next
+session. A library without images or `ANTIGRAVITY_CONTAINER_TOOLCHAINS=0`
+leaves both connection variables absent.
+
+- **Network.** The engine shares the session's network namespace and egress
+  boundary. Offline nested containers have no external path. Use library
+  images in offline and provider sessions. Unrestricted sessions can pull
+  into ephemeral engine storage.
+- **Workspace.** Files written inside a nested workspace bind belong to the
+  caller. Other bind sources refer to the engine filesystem. A session with
+  an engine sees the host's `/sys` read-only because it joins the engine's
+  network namespace.
+- **Budgets.** The engine receives the session's CPU, memory and process
+  budgets for itself and its nested containers. The agy container has its
+  own budgets. A process rlimit fallback applies where the host supports it.
+- **Engine hardening.** The private engine uses the fixed user-namespace
+  helper capabilities, `SYS_CHROOT`, FUSE and TUN, unmasked procfs, disabled
+  SELinux labelling for the engine, and a host-derived seccomp profile that
+  allows `sethostname` and `setdomainname`. Its startup step uses `CHOWN` for
+  its own cgroup subtree and then runs as the mapped unprivileged user. The
+  image declares `SETUID,SETGID,SYS_CHROOT,CHOWN` in its capability label.
+  Guided setup prepares the engine image and seccomp profile.
+
+#### Systemd containers and nested limits
+
+An eligible engine needs a private cgroup v2 namespace with a writable
+`nsdelegate` mount owned by namespace root. The reference verified nested
+systemd on native Linux and in a Windows Podman machine. Register an init
+image in the library, then run it inside the session. The example uses a
+Rocky Linux init image registered as `localhost/library-rocky:9`.
+
+```bash
+podman run --detach --name target --systemd=always localhost/library-rocky:9
+podman exec target timeout 120 sh -c 'until systemctl is-system-running | grep -qE "^(running|degraded)$"; do sleep 1; done'
+podman exec target systemd-run --unit=probe --property=Type=oneshot /bin/true
+podman rm --force target
+```
+
+Explicit nested limits such as `--memory` and `--pids-limit` require the
+matching controller. The Windows Podman machine uses `cgroupfs` without
+delegated controllers, so those limits are rejected and systemd
+resource-control settings have no effect. An ineligible engine reports
+the reason before launch. The reference's validation record lists the
+hosts tested.
+
+#### Migrating from host Podman delegation
+
+An exact `ANTIGRAVITY_CONTAINER_PODMAN=1` stops launches and build-only
+operations before engine access. An unconfigured restricted launch first
+shows setup guidance. Remove the variable from launch scripts and rerun
+`--container-setup` to migrate managed preferences and prepare the engine.
+Register the images your tests use as toolchains. The former socket override
+has no effect.
 
 ## Toolchains
 
-Sessions can use extra toolchains, such as Java, Go or Python, without Podman
-access, an unrestricted network or a rebuilt image. The operator keeps a
+Sessions can use file toolchains such as Java, Go or Python and registered
+container images from the same operator-managed library. The operator keeps a
 toolchain library on the host. Every session sees it read-only, with `nosuid`
 and `nodev`, at `/toolchains`. The library is shared by the Claude, Codex,
 OpenCode, Pi and Antigravity wrappers. A toolchain adds no network, IPC or
@@ -476,22 +511,23 @@ session.
 
 ### Managing the library
 
-The operator runs these commands on the host; `--container-toolchain` must be
-the first argument:
+Run `--container-toolchain` as the first wrapper argument on the host.
 
 ```bash
-agy --container-toolchain add java21.json   # install or replace from a recipe
-agy --container-toolchain list              # name, version, default, size, verified base
+agy --container-toolchain add java21        # install from the shipped catalog
+agy --container-toolchain add ~/recipes/my-tool.json
+agy --container-toolchain list              # installed toolchains and available catalog recipes
 agy --container-toolchain remove java21
 agy --container-toolchain verify [java21]   # rerun the checks on the current runtime image
 ```
 
-- **Sources:** a toolchain is a relocatable directory tree, taken either from
-  a path inside an OCI image referenced by `@sha256:` digest, or from a local
-  archive with its SHA-256. The command never downloads archives.
-- **Pulls:** pulling a missing image requires exact
-  `ANTIGRAVITY_CONTAINER_MAINTENANCE=1`. Like image builds, the pull happens on the
-  host, outside runtime filtering.
+- **Sources.** File toolchains can merge pinned OCI image paths, HTTPS
+  archives and local archives. Archive sources require a SHA-256 checksum.
+- **Recipe location.** Keep operator recipes outside workspace and state
+  mounts. The saved worktree scope includes the workspace parent.
+- **Fetching.** The host command fetches and verifies pinned sources before
+  extraction. Archive downloads and redirects use HTTPS. They use the CA
+  saved by setup when enabled. Fetches run outside session filtering.
 - **Extraction:** it rejects absolute paths, `..`, device nodes and links
   that leave the toolchain, and clears setuid and setgid bits.
 - **Atomic changes:** changes take a library lock and replace directories
@@ -512,8 +548,9 @@ A recipe is a JSON file that the operator keeps and reviews:
 
 | Key | Meaning |
 | --- | --- |
-| `schema`, `name`, `version` | `1`; `[a-z0-9][a-z0-9._-]*`; free version text |
-| `source` | `{"image": "<ref>@sha256:<digest>", "path": "/abs/path"}` or `{"archive": "/abs/file.tar.xz", "sha256": "<hex>", "strip_components": 1}` |
+| `schema`, `name`, `version` | Schema `2`, a name matching `[a-z0-9][a-z0-9._-]*` and version text. Schema `1` recipes keep working. |
+| `sources` | Ordered OCI image subpaths, HTTPS archives or local archives, each pinned by digest or checksum. |
+| `images` | Container images for the session engine. See [Images](#images). |
 | `path` | directories relative to the toolchain, added to `PATH` (default `["bin"]`) |
 | `env` | variables: `{"toolchain": "<relative path>"}` or `{"value": "<literal>"}` |
 | `requires` | other toolchains whose environment is loaded first |
@@ -551,12 +588,30 @@ A recipe is a JSON file that the operator keeps and reviews:
   access that provider and offline modes do not grant. Provide dependencies in
   the workspace, or use an unrestricted session.
 
-The verified example recipes (Temurin 21, Maven 3.9, Go, Node.js 24,
-Python 3.13 and Rust) are kept in the reference repository, in
-[`sandbox-container/docs/toolchains/`](https://github.com/yarilc/sandbox-container/tree/main/docs/toolchains),
-with their versions, digests, checksums and usage notes in its
-[README "Toolchains" section](https://github.com/yarilc/sandbox-container#toolchains).
-They do not depend on the agent.
+The shipped catalog contains `java21`, `maven3.9`, `go`, `node24`,
+`python3.13` and `rust`. Setup installs the catalog with the managed copy.
+
+### Images
+
+Use a digest-pinned registry reference in `images` or a local image object
+with a full `sha256:` image ID and a `localhost/` name. For the example above:
+
+```json
+{
+  "schema": 2,
+  "name": "alpine",
+  "version": "1",
+  "images": [{"local": "sha256:<full image ID>", "name": "localhost/library-alpine:1"}],
+  "check": ["podman", "run", "--rm", "--network=none", "localhost/library-alpine:1", "true"]
+}
+```
+
+Get the full ID from `podman image inspect --format '{{.Id}}' <local-image>`.
+Image-only toolchains omit path entries, environment and defaults. The host
+command copies or fetches the image into the library store and runs the
+check in the runtime image with a temporary offline engine. Running engines
+mount the store read-only. Image removal waits until all session engines stop
+and no remaining toolchain references the image.
 
 ### Telling the agent
 
@@ -698,9 +753,8 @@ help lists it. It forwards no other Windows variable. Path values, such as
 
 Limits on Windows:
 
-- No Podman delegation: `ANTIGRAVITY_CONTAINER_PODMAN=1` is refused, and a
-  release whose setup saved delegation, for example from a Linux shell in the
-  machine, asks to rerun setup from Windows.
+- An exact `ANTIGRAVITY_CONTAINER_PODMAN=1` stops before WSL runs. A managed
+  release with saved delegation asks to rerun setup from Windows.
 - PowerShell pipeline input, such as
   `'x' | .\antigravity-container.ps1 --container-shell -c cat`, is refused,
   because PowerShell alters it. Redirect a file from `cmd.exe` instead:
@@ -757,6 +811,20 @@ setup proposes, the machine's system bundle (see
 passes it to the image builds, including the `agy` download, and saves it for
 sessions. Rerun setup after the machine is recreated, and enable the
 import again on the new machine.
+
+### Toolchains on Windows
+
+The library lives inside the Podman machine. The wrappers running in that
+machine share it. Recreating the machine removes the library.
+
+```powershell
+.\antigravity-container.ps1 --container-toolchain add java21
+.\antigravity-container.ps1 --container-toolchain add C:\Work\recipes\my-tool.json
+```
+
+Drive-letter recipe paths and local archive paths in recipes translate to the
+corresponding machine mount, such as `/mnt/c/Work/recipes`. The command refuses
+UNC paths and drives the distribution cannot mount.
 
 ### Install as a command
 
@@ -830,8 +898,8 @@ metadata is in the common parent. Launching from a nested subdirectory selects
 a different parent. If the selected parent is the host home or `/`, the flag
 exposes that entire directory.
 
-Absolute paths are preserved because the host service resolves bind sources
-for child containers. The process uses `--userns=keep-id` and the caller's
+Absolute paths are preserved for workspace binds, including binds requested
+by nested containers through the private session engine. The process uses `--userns=keep-id` and the caller's
 UID/GID, so files created in the project belong to the caller. The container
 root is read-only; workspace and application state are writable, with ephemeral
 tmpfs storage provisioned explicitly. Automatic read-only tmpfs provisioning
@@ -847,8 +915,7 @@ shared-state home allow execution for native runtime components (the profile
 declares executable temporary storage) and have 512 MiB limits; `/var/tmp`
 uses `noexec` with a separate 512 MiB limit; `/run` uses `noexec` with a 32 MiB
 limit and is not writable by the session user. All use `nosuid,nodev`; `/tmp`,
-`/var/tmp` and the home have mode `1777`; all disappear with the container. In
-delegated sessions, nested Podman gets its own private tmpfs storage. Restricted sessions also mount the
+`/var/tmp` and the home have mode `1777`; all disappear with the container. Restricted sessions also mount the
 guard and its session inputs read-only. No full host home, host OpenSpec
 settings, host certificates, or SSH configuration is mounted automatically.
 
@@ -883,12 +950,9 @@ configuration files atomically.
 
 The wrapper can itself run inside a container connected to the same Linux host
 through a local Unix Podman socket. Its workspace and state paths must also
-exist on that host at exactly the same absolute paths. For socket delegation,
-the selected path must be absolute before canonicalization and identify a
-readable, writable Unix socket. The service must return one complete rootless
-result and an absolute host socket path; extra response lines are rejected.
-The wrapper uses that reported path as the bind source, preserving spaces and
-supporting paths remapped inside an outer container.
+exist on that host at exactly the same absolute paths. The wrapper uses the
+explicit same-host service for host-side operations.
+
 TCP/SSH transports, named remote connections, the Podman machine connection
 that `podman.exe` uses, and rootful engines are rejected. On Windows, the
 PowerShell entry runs the sandbox inside the Podman machine instead; see
@@ -896,12 +960,9 @@ PowerShell entry runs the sandbox inside the Podman machine instead; see
 
 ### Session hardening, budgets and lifetime
 
-Every agy and shell session, with or without Podman delegation and YOLO and in
-both account and Gemini API-key modes, runs with `--cap-drop=all` and
-`--security-opt=no-new-privileges`. Bubblewrap, Git, OpenSpec and the delegated Podman client work
-under these settings. The wrapper never adds capabilities back to work around
-a tool; such a limitation is recorded in `docs/validation.md`. Delegation
-still grants host engine authority beyond these limits.
+Every agy and shell session runs with `--cap-drop=all` and
+`--security-opt=no-new-privileges`, including sessions with a private engine.
+The session's privilege boundary is independent of the approval setting.
 
 Every session has memory, CPU and process budgets (defaults 4 GiB, 2 CPUs and
 512 processes; see [Environment](#environment)). Only an unset variable selects
@@ -928,8 +989,8 @@ cgroup manager, which applies no cgroup limits` and the matching CPU line, and
 the process budget uses the fallback below.
 
 The process budget has a fallback. Without the `pids` controller, the agent
-container gets a soft and hard process rlimit (`--ulimit nproc=N:N`) at the
-selected budget, and the notice reads `agent process budget enforced through the
+container's first process sets its soft and hard process rlimit at the
+selected budget before the application starts. The notice reads `agent process budget enforced through the
 process rlimit (512 tasks of the session user, threads included)`. The limit is
 per session: Linux 5.14 and later count it per user namespace, and every
 container has its own. The session cannot raise it, because it has no
@@ -940,8 +1001,8 @@ or unrecognized kernels may count every process of your user, so the process
 budget then stays unenforced, and the notice names the reason. The memory and
 CPU budgets have no fallback. The provider proxy's process budget uses the same
 fallback. Which mechanism enforces each process budget is part of the restricted
-qualification identity, and each launch checks the configured rlimit as it
-checks the cgroup limits.
+qualification identity. The launch verifies the limit setup, and smoke and
+qualification check the effective value.
 
 Risk: without the memory or process budget, a session can exhaust host memory
 or processes for your user; without a CPU budget it can saturate every CPU.
@@ -1002,8 +1063,7 @@ deliberately; the wrapper then prints a warning.
 | `ANTIGRAVITY_CONTAINER_TRUST_HOST_CA` | disabled; `1`, `true` or `yes` mounts one host CA bundle read-only |
 | `ANTIGRAVITY_CONTAINER_CA_BUNDLE` | first of `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt` |
 | `ANTIGRAVITY_YOLO` | disabled |
-| `ANTIGRAVITY_CONTAINER_PODMAN` | disabled |
-| `ANTIGRAVITY_CONTAINER_PODMAN_SOCKET` | `${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock` |
+| `ANTIGRAVITY_CONTAINER_ENGINE_IMAGE` | prepared engine image or `localhost/antigravity-cli-engine:latest` |
 | `ANTIGRAVITY_CONTAINER_MEMORY_LIMIT` | `4g` (positive integer with unit `k`, `m` or `g`) |
 | `ANTIGRAVITY_CONTAINER_CPU_LIMIT` | `2` (positive number of CPUs, at most 3 decimals, up to 1024) |
 | `ANTIGRAVITY_CONTAINER_PIDS_LIMIT` | `512` (integer from 1 to 4194304) |
@@ -1012,12 +1072,10 @@ deliberately; the wrapper then prints a warning.
 | `ANTIGRAVITY_CONTAINER_TOOLCHAINS` | enabled (also when empty); `0`, `false` or `no` omits the read-only `/toolchains` mount |
 | `ANTIGRAVITY_CONTAINER_TOOLCHAINS_DIR` | `${XDG_DATA_HOME:-~/.local/share}/sandbox-toolchains`, shared by the wrappers |
 
-When the wrapper already uses a local Unix `CONTAINER_HOST`, that accessible
-socket is the default service endpoint instead. An explicit
-`ANTIGRAVITY_CONTAINER_PODMAN_SOCKET` takes precedence. Caller variables are
-forwarded only by name, as described in [First run](#direct-operator-launches)
-and [Network modes](#network-modes); the entire environment and `.env` files are
-not imported by the wrapper. `EDITOR` and `VISUAL` use the included nano editor.
+An explicit same-host Unix `CONTAINER_HOST` selects the launch service.
+Caller variables are forwarded only by name, as described in
+[First run](#direct-operator-launches) and [Network modes](#network-modes).
+`EDITOR` and `VISUAL` use the included nano editor.
 
 With host CA trust on a Podman machine on Windows, the host is the machine: it
 must first import the CAs that Windows trusts
@@ -1136,7 +1194,10 @@ Antigravity's part. Every other agent-specific value is declared in
 ## Verification
 
 Run the checks in the runner, which uses the `agy` image and native volume
-storage (a noexec `/tmp` or a Windows drive cannot hold the test fixtures):
+storage (a noexec `/tmp` or a Windows drive cannot hold the test fixtures).
+Prepare the runtime and guard-toolchain images, the adopted session engine
+image, and the pinned Alpine sample named in `tests/test_runtime.py` before
+running their required modes:
 
 ```bash
 bash tests/run-runtime.sh --wrapper        # shared launcher and wrapper tests with a fake engine

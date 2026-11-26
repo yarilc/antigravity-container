@@ -1,5 +1,39 @@
 # Validation record
 
+## Adoption of `sandbox-ref-36` development checks: 2026-11-26
+
+Copied the shared files from `sandbox-container` commit
+`ce2c9d28873838a4ac541da34edaf7d8b5264be4`. The adoption runner generated
+the checklist for the full shared, setup, setup-runtime, qualification,
+wrapper, runtime, network-feasibility, guard and network modes.
+
+The development session had a WSL2 6.6.87.2 kernel, a Windows-mounted 9p
+checkout, and a read-only container root. The mounted drive permits
+fixture script execution and reports file and directory modes as `0777`.
+The local Podman client returned `Operation not permitted`.
+
+| Check | Result |
+| --- | --- |
+| Manifest, alignment, engine fixtures, profile, image pins, Windows bootstrap and wrapper help | 84 passed and one skipped on executable 9p storage. This group includes the byte comparison against the tagged reference |
+| Legacy Podman opt-in | Nine configured mode and argument combinations, including build-only, refused it before state creation |
+| Network policy, TLS, multiplexing and platform | 67 passed and one skipped |
+| Qualification contracts and toolchain recipe validation | 30 passed, including schema 2, image recipe and catalog checks |
+| Shared setup on `/tmp` | 25 passed, 19 failures and 49 errors. The failing cases and result categories matched the reference checkout in the same environment. They include rejected writable ancestors and unavailable executable fixtures or engine calls |
+| Windows namespace entry and library path fixtures | The Windows enter fixture failed its `0700` and `0600` assertions on 9p because the mount reports `0777`. The recipe and archive translation test reached library preparation and was blocked by the world-writable `/tmp` ancestor |
+| Runtime discovery | 55 Podman-dependent tests discovered and skipped. The wrapper runner stopped when Podman returned `Operation not permitted` |
+| Syntax, whitespace and specification checks | Bash and Python syntax, `git diff --check`, strict OpenSpec validation and the spec merge preview passed |
+| Pinned ShellCheck and PSScriptAnalyzer | Unavailable. Podman returned `Operation not permitted` and the analyzer package endpoint returned HTTP 502 |
+| Adoption runner | Generated the checklist and stopped in preflight. The Podman queries failed, image availability could not be established, and both the home and temporary filesystems had less than 1 GiB free |
+
+Production validation follows closure of this change. The Linux or WSL run
+uses the recorded checklist, including the runtime and guard-toolchain
+images and the Alpine sample pinned in `tests/test_runtime.py`. The runner
+rebuilds `localhost/antigravity-cli-engine:latest`. Record its identity and
+`SETUID,SETGID,SYS_CHROOT,CHOWN` label, the native setup and guarded Gemini
+results, and the Windows post-release validation as they are performed.
+Open separate changes for defects found in production. The older entries
+below retain the evidence for their tags.
+
 ## Environment
 
 Initial implementation checks on 2026-10-31 used Linux amd64, rootless

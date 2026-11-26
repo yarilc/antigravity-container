@@ -9,6 +9,7 @@ import tempfile
 import unittest
 import uuid
 
+from sandbox_profile import REAL_PROFILE
 from test_setup import pty_run
 
 
@@ -101,7 +102,7 @@ class SetupRuntime(unittest.TestCase):
             + "if args[:2] == ['image','inspect'] and '{{.Id}}' in args and args[-1] in " + repr(('localhost/antigravity-cli:latest', prepared_runtime)) + ":\n"
             + ' print(' + repr(prepared_runtime) + '); sys.exit(0)\n'
             + "if args[:2] == ['image','exists'] and args[-1] in " + repr(('localhost/antigravity-egress:local', prepared_proxy)) + ": sys.exit(0)\n"
-            + "if args[:2] == ['image','inspect'] and args[-1] in " + repr(('localhost/antigravity-egress:local', prepared_proxy)) + ":\n"
+            + "if args[:2] == ['image','inspect'] and '{{.Id}}' in args and args[-1] in " + repr(('localhost/antigravity-egress:local', prepared_proxy)) + ":\n"
             + ' print(Path(' + repr(str(self.proxy_selection)) + ').read_text().strip()); sys.exit(0)\n'
             + 'os.execv(' + repr(self.real_podman) + ',[' + repr(self.real_podman) + ',*args])\n')
         shim.chmod(0o700)
@@ -120,6 +121,8 @@ class SetupRuntime(unittest.TestCase):
     def clean_tags(self):
         for path in self.root.glob('releases/*/setup.json'):
             self.tags.add(json.loads(path.read_text())['image'])
+            for kind in ('engine', 'toolchain', 'proxy'):
+                self.tags.add(REAL_PROFILE.image(kind, 'setup-' + path.parent.name))
         for tag in self.tags:
             subprocess.run(['podman', 'image', 'rm', tag], capture_output=True, timeout=30)
 
@@ -134,12 +137,15 @@ class SetupRuntime(unittest.TestCase):
         else:
             answers += [('State mode', 'shared'), ('Shared Antigravity configuration directory', '')]
         answers += [
-                    ('Delegate the host Podman API', 'no'), ('Enable Antigravity permission bypass', 'no'),
+                    ('Enable Antigravity permission bypass', 'no'),
                     ('Use parent-directory worktree scope', 'no'), ('Agent memory limit', ''),
                     ('Agent CPU limit', ''), ('Agent process limit', ''), ('Session lifetime in seconds', ''),
                     ('Trust a host CA bundle', 'yes' if ca else 'no')]
         if ca:
-            answers += [('CA bundle file', '/etc/ssl/certs/ca-certificates.crt')]
+            # The engine and the runner both see the bundle at this native path.
+            bundle = self.base / 'ca-bundle.pem'
+            shutil.copyfile('/etc/ssl/certs/ca-certificates.crt', bundle)
+            answers += [('CA bundle file', str(bundle))]
         answers += [('Managed launch command path', str(self.command)),
                     ('Podman launch endpoint', self.env['CONTAINER_HOST'])]
         if mode == 'provider':
@@ -178,6 +184,10 @@ class SetupRuntime(unittest.TestCase):
         first = json.loads((release / 'setup.json').read_text())
         self.tags.add(first['image'])
         self.assertEqual(first['network'], 'provider')
+        self.assertEqual(first['schema'], 3)
+        self.assertRegex(first['engine_image'], r'^sha256:[0-9a-f]{64}$')
+        self.assertNotIn('podman', first)
+        self.assertNotIn('podman_socket', first)
         guard = (release / 'network/bin/sandbox-egress-guard').read_bytes()
         # No exported wrapper/network settings in this fresh launch environment.
         result = subprocess.run([str(self.command), '--version'], cwd=self.workspace,
